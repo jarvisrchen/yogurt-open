@@ -1,0 +1,37 @@
+.DS_Store
+node_modules/
+.env
+.env.local
+.env*.local
+.vercel
+.next/
+dist/
+build/
+*.log
+.cache/
+
+
+# Rust
+/target/
+**/*.rs.bk
+
+# pnpm + frontend (node_modules already covered above)
+.pnpm-store/
+
+# Playwright E2E artifacts
+web/test-results/
+web/playwright-report/
+web/blob-report/
+web/.playwright/
+
+# GSD planning scratch (v1 archived in docs/archive/.planning/v1; future runs stay local)
+/.planning/
+repomix-output.*
+*.tsbuildinfo
+
+# cloud/ webapp Playwright output
+cloud/e2e/screenshots/
+cloud/e2e/.audio/
+cloud/test-results/
+cloud/playwright-report/
+supabase/.temp/

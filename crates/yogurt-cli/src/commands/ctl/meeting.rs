@@ -1,0 +1,1071 @@
+//! Mutations always need a live server.
+//! Reads fall back to the local SQLite directory when discovery finds no server, printing `source: db` (text: stderr; JSON: a field) since the answer may be stale.
+
+use std::path::{Path, PathBuf};
+
+use clap::Subcommand;
+use serde::Deserialize;
+use serde_json::json;
+
+use super::client::{self, Client, CtlError};
+
+#[derive(Subcommand, Debug)]
+pub enum MeetingCmd {
+    /// List meetings, newest first.
+    List {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Create a meeting (Library row); `--start` also begins recording.
+    New {
+        #[arg(long)]
+        title: Option<String>,
+        /// Also begin recording. Refused (exit 2) together with
+        /// `--transcript-file`/`--from-script` -- a fixture meeting was
+        /// never recorded, so there's nothing to record into.
+        #[arg(long, conflicts_with_all = ["transcript_file", "from_script"])]
+        start: bool,
+        /// Seed a finished fixture meeting from a JSON file of transcript
+        /// segments (`[{"ts_ms":0,"channel":"me","text":"..."}, ...]`,
+        /// `channel` is `me`/`them` -- see docs/DEBUGGING-TRANSCRIPTS.md
+        /// for the exact shape the server stores). Implies the meeting is
+        /// created already ended.
+        #[arg(long, conflicts_with = "from_script")]
+        transcript_file: Option<PathBuf>,
+        /// Seed a finished fixture meeting by converting a scripts/eval-style conversation
+        /// (`A:`/`B:` lines, `PAUSE <seconds>`, `#` comments, see scripts/eval/conversation.txt)
+        /// into `me`/`them` segments with synthetic timestamps. Implies the meeting is created already ended.
+        #[arg(long)]
+        from_script: Option<PathBuf>,
+        /// Seed the user's raw notes from a markdown file. With
+        /// `--transcript-file`/`--from-script` this stages exactly what
+        /// End meeting hands to enhance (notes and transcript both on the
+        /// row), so `ctl meeting enhance` reproduces that path headlessly.
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
+    },
+    /// Begin recording an existing meeting. No-op if it's already recording.
+    Start { meeting: String },
+    /// Stop the active meeting, or a specific one. No-op if nothing is recording.
+    Stop { meeting: Option<String> },
+    /// Print the full meeting row.
+    Show { meeting: String },
+    /// Print the enhanced (or raw) notes, tags stripped.
+    Summary { meeting: String },
+    /// Print the transcript, one line per segment.
+    Transcript {
+        #[arg(long)]
+        follow: bool,
+        /// Format as a shareable markdown doc (title header, **speaker**
+        /// bold, (mm:ss) timestamps) instead of plain text. Conflicts with
+        /// the global --json -- pick one output format.
+        #[arg(long)]
+        markdown: bool,
+        meeting: String,
+    },
+    /// Run augmented-notes generation and forward progress to stderr.
+    Enhance {
+        meeting: String,
+        /// Note format to use (`general`, `standup`, `one-on-one`,
+        /// `team-meeting`, `design-review`, `customer-call`, `interview`).
+        /// Omit to let the model pick the best fit. Needs Yogurt Pro, and is ignored without it.
+        #[arg(long)]
+        template: Option<String>,
+    },
+    /// After a re-enhance, keep the new notes or put back the ones it replaced.
+    Keep {
+        #[command(subcommand)]
+        version: KeepVersion,
+    },
+    /// Pause or resume the mic on an actively-recording meeting. Idempotent;
+    /// defaults to whatever is currently recording.
+    Mute {
+        #[command(subcommand)]
+        action: MuteAction,
+    },
+    /// Full-text search across title, notes, and transcript.
+    Search {
+        query: String,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Remove a meeting. Refuses without --yes unless --dry-run.
+    Delete {
+        meeting: String,
+        /// Print what would be removed, without removing it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm the deletion.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KeepVersion {
+    /// Keep the re-enhanced notes.
+    New { meeting: String },
+    /// Put back the notes from before the re-enhance.
+    Previous { meeting: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MuteAction {
+    /// Pause the mic.
+    On { meeting: Option<String> },
+    /// Resume the mic.
+    Off { meeting: Option<String> },
+}
+
+pub async fn run(cmd: MeetingCmd, port: Option<u16>, json_out: bool) -> Result<(), CtlError> {
+    match cmd {
+        MeetingCmd::List { limit } => list(port, json_out, limit).await,
+        MeetingCmd::New {
+            title,
+            start,
+            transcript_file,
+            from_script,
+            notes_file,
+        } => {
+            new(
+                port,
+                json_out,
+                title,
+                start,
+                transcript_file,
+                from_script,
+                notes_file,
+            )
+            .await
+        }
+        MeetingCmd::Start { meeting } => start(port, json_out, &meeting).await,
+        MeetingCmd::Stop { meeting } => stop(port, json_out, meeting).await,
+        MeetingCmd::Show { meeting } => show(port, json_out, &meeting).await,
+        MeetingCmd::Summary { meeting } => summary(port, json_out, &meeting).await,
+        MeetingCmd::Transcript {
+            follow,
+            markdown,
+            meeting,
+        } => transcript(port, json_out, &meeting, follow, markdown).await,
+        MeetingCmd::Enhance { meeting, template } => {
+            enhance(port, json_out, &meeting, template.as_deref()).await
+        }
+        MeetingCmd::Keep { version } => keep(port, json_out, version).await,
+        MeetingCmd::Mute { action } => mute(port, json_out, action).await,
+        MeetingCmd::Search { query, limit } => search(port, json_out, &query, limit).await,
+        MeetingCmd::Delete {
+            meeting,
+            dry_run,
+            yes,
+        } => delete(port, json_out, &meeting, dry_run, yes).await,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum MeetingRef {
+    Id(String),
+    Url { port: u16, id: String },
+    Last,
+}
+
+impl MeetingRef {
+    pub(crate) fn parse(s: &str) -> Self {
+        if s == "last" {
+            return MeetingRef::Last;
+        }
+        if let Ok(u) = reqwest::Url::parse(s) {
+            if let Some(port) = u.port() {
+                if let Some(mut segs) = u.path_segments() {
+                    if segs.next() == Some("meeting") {
+                        if let Some(id) = segs.next().filter(|s| !s.is_empty()) {
+                            return MeetingRef::Url {
+                                port,
+                                id: id.to_string(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        MeetingRef::Id(s.to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveRef {
+    id: String,
+}
+
+/// Mutation path: never falls back to the DB.
+pub(crate) async fn client_for_ref(
+    port_flag: Option<u16>,
+    r: &MeetingRef,
+) -> Result<(Client, String), CtlError> {
+    match r {
+        MeetingRef::Url { port, id } => Ok((Client::at_port(*port)?, id.clone())),
+        MeetingRef::Id(id) => Ok((Client::discover(port_flag).await?, id.clone())),
+        MeetingRef::Last => {
+            let c = Client::discover(port_flag).await?;
+            let page: yogurt_db::MeetingPage = c.get("/api/meetings?limit=1").await?;
+            let id = page
+                .meetings
+                .into_iter()
+                .next()
+                .map(|m| m.id)
+                .ok_or_else(|| {
+                    CtlError::local("no meetings found", "run `yogurt ctl meeting new`")
+                })?;
+            Ok((c, id))
+        }
+    }
+}
+
+enum Resolved {
+    Server(Client, String),
+    Db(yogurt_db::Db, String),
+}
+
+/// Read path: like [`client_for_ref`], but [`CtlError::NoServer`] falls back to the local database.
+async fn resolve_read(port_flag: Option<u16>, r: &MeetingRef) -> Result<Resolved, CtlError> {
+    match client_for_ref(port_flag, r).await {
+        Ok((c, id)) => Ok(Resolved::Server(c, id)),
+        Err(CtlError::NoServer(_)) => {
+            let db = open_db_readonly()?;
+            let id = match r {
+                MeetingRef::Url { id, .. } | MeetingRef::Id(id) => id.clone(),
+                MeetingRef::Last => {
+                    let repo = yogurt_db::MeetingRepo::new(db.clone());
+                    let page = repo
+                        .list_page(&yogurt_db::MeetingFilter::default(), 1, 0)
+                        .map_err(db_err)?;
+                    let Some(m) = page.meetings.into_iter().next() else {
+                        return Err(CtlError::local(
+                            "no meetings found",
+                            "run `yogurt ctl meeting new` (needs a running server)",
+                        ));
+                    };
+                    m.id
+                }
+            };
+            Ok(Resolved::Db(db, id))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn open_db_readonly() -> Result<yogurt_db::Db, CtlError> {
+    let path = crate::data_dir::db_path(&client::yogurt_home()?);
+    if !path.exists() {
+        return Err(CtlError::local(
+            "no local database found",
+            "run `yogurt start` at least once",
+        ));
+    }
+    yogurt_db::Db::open(&path).map_err(|e| {
+        CtlError::local(
+            format!("could not open local database: {e:#}"),
+            "run `yogurt doctor`",
+        )
+    })
+}
+
+fn db_err(e: anyhow::Error) -> CtlError {
+    CtlError::local(format!("database error: {e:#}"), "run `yogurt doctor`")
+}
+
+fn get_or_not_found(
+    repo: &yogurt_db::MeetingRepo,
+    id: &str,
+) -> Result<yogurt_db::Meeting, CtlError> {
+    repo.get(id).map_err(db_err)?.ok_or_else(|| {
+        CtlError::local(
+            format!("no such meeting: {id}"),
+            "run `yogurt ctl meeting list`",
+        )
+    })
+}
+
+/// The server's largest page.
+const PAGE_SIZE: usize = 100;
+
+async fn collect_pages(
+    limit: Option<usize>,
+    mut fetch: impl AsyncFnMut(usize, usize) -> Result<yogurt_db::MeetingPage, CtlError>,
+) -> Result<(Vec<yogurt_db::MeetingSummary>, usize), CtlError> {
+    let mut rows = Vec::new();
+    loop {
+        let want = limit.map_or(PAGE_SIZE, |n| {
+            n.saturating_sub(rows.len()).clamp(1, PAGE_SIZE)
+        });
+        let page = fetch(want, rows.len()).await?;
+        let got = page.meetings.len();
+        rows.extend(page.meetings);
+        if got == 0 || rows.len() >= page.total || limit.is_some_and(|n| rows.len() >= n) {
+            if let Some(n) = limit {
+                rows.truncate(n);
+            }
+            return Ok((rows, page.total));
+        }
+    }
+}
+
+async fn list(
+    port_flag: Option<u16>,
+    json_out: bool,
+    limit: Option<usize>,
+) -> Result<(), CtlError> {
+    let (meetings, total, source) = match Client::discover(port_flag).await {
+        Ok(c) => {
+            let (rows, total) = collect_pages(limit, async |l, o| {
+                c.get(&format!("/api/meetings?limit={l}&offset={o}")).await
+            })
+            .await?;
+            (rows, total, "server")
+        }
+        Err(CtlError::NoServer(_)) => {
+            let repo = yogurt_db::MeetingRepo::new(open_db_readonly()?);
+            let (rows, total) = collect_pages(limit, async |l, o| {
+                repo.list_page(&yogurt_db::MeetingFilter::default(), l, o)
+                    .map_err(db_err)
+            })
+            .await?;
+            (rows, total, "db")
+        }
+        Err(e) => return Err(e),
+    };
+    if json_out {
+        println!(
+            "{}",
+            json!({ "meetings": meetings, "total": total, "source": source })
+        );
+    } else {
+        if source == "db" {
+            eprintln!("source: db");
+        }
+        println!("{total} meeting(s)");
+        for m in &meetings {
+            let state = if m.ended_at.is_some() {
+                "ended"
+            } else {
+                "live"
+            };
+            println!("{}  {state:<5}  {}", m.id, m.title);
+        }
+    }
+    Ok(())
+}
+
+async fn new(
+    port_flag: Option<u16>,
+    json_out: bool,
+    title: Option<String>,
+    start: bool,
+    transcript_file: Option<PathBuf>,
+    from_script: Option<PathBuf>,
+    notes_file: Option<PathBuf>,
+) -> Result<(), CtlError> {
+    // `--transcript-file` is forwarded as a bare `serde_json::Value` so a malformed file fails on the server's own validation
+    // and a well-formed one round-trips exactly. `--from-script` has no JSON to forward, so it is built into segments here.
+    let transcript_json = match (&transcript_file, &from_script) {
+        (Some(p), _) => Some(read_json_file(p)?),
+        (None, Some(p)) => Some(
+            serde_json::to_value(segments_from_script(p)?)
+                .expect("Vec<FixtureSegment> always serializes"),
+        ),
+        (None, None) => None,
+    };
+    let ended = transcript_json.is_some();
+
+    let c = Client::discover(port_flag).await?;
+    let mut body = json!({ "title": title });
+    if let Some(tj) = transcript_json {
+        body["transcript_json"] = tj;
+    }
+    if ended {
+        body["ended"] = json!(true);
+    }
+    if let Some(p) = &notes_file {
+        let notes = std::fs::read_to_string(p).map_err(|e| {
+            CtlError::local(
+                format!("could not read --notes-file {}: {e}", p.display()),
+                "check the path exists",
+            )
+        })?;
+        body["notes_md"] = json!(notes);
+    }
+    let m: yogurt_db::Meeting = c.post("/api/meetings", &body).await?;
+    let started = if start {
+        Some(start_meeting(&c, &m.id).await?)
+    } else {
+        None
+    };
+    if json_out {
+        println!(
+            "{}",
+            json!({ "id": m.id, "title": m.title, "started": started })
+        );
+    } else {
+        println!("created {} ({})", m.id, m.title);
+        match started {
+            Some(true) => println!("started {}", m.id),
+            Some(false) => println!("already started {}", m.id),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+/// One `--transcript-file` / `--from-script` segment, matching the shape the server validates on `POST /api/meetings`.
+#[derive(Debug, serde::Serialize)]
+struct FixtureSegment {
+    ts_ms: i64,
+    channel: &'static str,
+    text: String,
+}
+
+/// Raw JSON with no shape validation: the server owns `transcript_json`'s shape, so a malformed file is rejected there with its message.
+fn read_json_file(path: &Path) -> Result<serde_json::Value, CtlError> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        CtlError::local(
+            format!("could not read --transcript-file {}: {e}", path.display()),
+            "check the path exists",
+        )
+    })?;
+    serde_json::from_str(&content).map_err(|e| {
+        CtlError::local(
+            format!(
+                "--transcript-file {} is not valid JSON: {e}",
+                path.display()
+            ),
+            "check the file contains a JSON array of segments (see docs/DEBUGGING-TRANSCRIPTS.md)",
+        )
+    })
+}
+
+/// Convert an eval-style script into `me`/`them` segments.
+/// Timestamps are synthetic: 4 seconds per spoken line plus any `PAUSE` seconds, so a longer silence still shows as a gap.
+fn segments_from_script(path: &Path) -> Result<Vec<FixtureSegment>, CtlError> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        CtlError::local(
+            format!("could not read --from-script {}: {e}", path.display()),
+            "check the path exists",
+        )
+    })?;
+    let bad_line = |line: &str| {
+        CtlError::local(
+            format!("--from-script {}: unrecognized line: {line}", path.display()),
+            "expected `A: <line>`, `B: <line>`, `PAUSE <seconds>`, or a `#` comment (see scripts/eval/conversation.txt)",
+        )
+    };
+
+    let mut ts_ms: i64 = 0;
+    let mut segments = Vec::new();
+    for line in content.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(secs) = line.strip_prefix("PAUSE ") {
+            let secs: f64 = secs.trim().parse().map_err(|_| bad_line(line))?;
+            ts_ms += (secs * 1000.0).round() as i64;
+            continue;
+        }
+        let (channel, text) = if let Some(t) = line.strip_prefix("A: ") {
+            ("me", t)
+        } else if let Some(t) = line.strip_prefix("B: ") {
+            ("them", t)
+        } else {
+            return Err(bad_line(line));
+        };
+        segments.push(FixtureSegment {
+            ts_ms,
+            channel,
+            text: text.to_string(),
+        });
+        ts_ms += 4000;
+    }
+    Ok(segments)
+}
+
+/// `true` if this call started recording, `false` if it was already active.
+async fn start_meeting(c: &Client, id: &str) -> Result<bool, CtlError> {
+    match c
+        .post_empty::<serde_json::Value>(&format!("/api/meetings/{id}/start"))
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(CtlError::Server(msg)) if msg.contains("already started") => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+async fn start(port_flag: Option<u16>, json_out: bool, meeting: &str) -> Result<(), CtlError> {
+    let r = MeetingRef::parse(meeting);
+    let (c, id) = client_for_ref(port_flag, &r).await?;
+    let started_now = start_meeting(&c, &id).await?;
+    if json_out {
+        println!(
+            "{}",
+            json!({ "id": id, "status": if started_now { "started" } else { "already started" } })
+        );
+    } else if started_now {
+        println!("started {id}");
+    } else {
+        println!("already started {id}");
+    }
+    Ok(())
+}
+
+async fn stop(
+    port_flag: Option<u16>,
+    json_out: bool,
+    meeting: Option<String>,
+) -> Result<(), CtlError> {
+    let (c, id) = match meeting {
+        Some(m) => client_for_ref(port_flag, &MeetingRef::parse(&m)).await?,
+        None => {
+            let c = Client::discover(port_flag).await?;
+            let active: Option<ActiveRef> = c.get("/api/meetings/active").await?;
+            match active {
+                Some(a) => (c, a.id),
+                None => {
+                    if json_out {
+                        println!("{}", json!({ "status": "no active meeting" }));
+                    } else {
+                        println!("no active meeting");
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    };
+    let _: serde_json::Value = c.post_empty(&format!("/api/meetings/{id}/stop")).await?;
+    if json_out {
+        println!("{}", json!({ "id": id, "status": "stopped" }));
+    } else {
+        println!("stopped {id}");
+    }
+    Ok(())
+}
+
+async fn show(port_flag: Option<u16>, json_out: bool, meeting: &str) -> Result<(), CtlError> {
+    let r = MeetingRef::parse(meeting);
+    let (m, source) = match resolve_read(port_flag, &r).await? {
+        Resolved::Server(c, id) => (
+            c.get::<yogurt_db::Meeting>(&format!("/api/meetings/{id}"))
+                .await?,
+            "server",
+        ),
+        Resolved::Db(db, id) => {
+            let repo = yogurt_db::MeetingRepo::new(db);
+            (get_or_not_found(&repo, &id)?, "db")
+        }
+    };
+    let segment_count = parse_segments(&m.transcript_json).len();
+    if json_out {
+        println!(
+            "{}",
+            json!({ "meeting": m, "source": source, "segments": segment_count })
+        );
+    } else {
+        if source == "db" {
+            eprintln!("source: db");
+        }
+        println!("id: {}", m.id);
+        println!("title: {}", m.title);
+        println!("started_at: {}", m.started_at);
+        println!("ended: {}", m.ended_at.is_some());
+        println!(
+            "stt_engine: {}",
+            m.stt_engine.as_deref().unwrap_or("unknown")
+        );
+        println!("enhanced: {}", m.enriched_md.is_some());
+        if let Some(t) = m.template.as_deref() {
+            println!("template: {t}");
+        }
+        println!("segments: {segment_count}");
+    }
+    Ok(())
+}
+
+async fn summary(port_flag: Option<u16>, json_out: bool, meeting: &str) -> Result<(), CtlError> {
+    let r = MeetingRef::parse(meeting);
+    let (body, source) = match resolve_read(port_flag, &r).await? {
+        Resolved::Server(c, id) => (
+            c.get_text(&format!("/api/meetings/{id}/markdown")).await?,
+            "server",
+        ),
+        Resolved::Db(db, id) => {
+            let repo = yogurt_db::MeetingRepo::new(db);
+            let m = get_or_not_found(&repo, &id)?;
+            (m.enriched_md.unwrap_or(m.notes_md), "db")
+        }
+    };
+    let text = strip_tags(&body);
+    if json_out {
+        println!("{}", json!({ "summary": text, "source": source }));
+    } else {
+        if source == "db" {
+            eprintln!("source: db");
+        }
+        println!("{text}");
+    }
+    Ok(())
+}
+
+/// Strip the `<span data-ai-grey ...>` / `<span data-transcript-link ...>` wrappers the enhance renderer embeds.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+#[derive(Debug, Deserialize)]
+struct Segment {
+    ts_ms: i64,
+    channel: String,
+    text: String,
+}
+
+fn parse_segments(transcript_json: &str) -> Vec<Segment> {
+    serde_json::from_str(transcript_json).unwrap_or_default()
+}
+
+fn print_segment(json_out: bool, markdown: bool, s: &Segment) {
+    if json_out {
+        println!(
+            "{}",
+            json!({ "ts_ms": s.ts_ms, "channel": s.channel, "text": s.text })
+        );
+    } else if markdown {
+        let secs = s.ts_ms / 1000;
+        println!(
+            "**{}** ({:02}:{:02})  {}",
+            s.channel,
+            secs / 60,
+            secs % 60,
+            s.text
+        );
+    } else {
+        println!("{} {}: {}", s.ts_ms / 1000, s.channel, s.text);
+    }
+}
+
+fn print_markdown_header(title: &str, id: &str) {
+    println!("# {title}");
+    println!();
+    println!("_meeting id: {id}_");
+    println!();
+}
+
+async fn transcript(
+    port_flag: Option<u16>,
+    json_out: bool,
+    meeting: &str,
+    follow: bool,
+    markdown: bool,
+) -> Result<(), CtlError> {
+    if json_out && markdown {
+        return Err(CtlError::local(
+            "--markdown conflicts with --json",
+            "pick one output format",
+        ));
+    }
+    let r = MeetingRef::parse(meeting);
+    match resolve_read(port_flag, &r).await? {
+        Resolved::Db(db, id) => {
+            if follow {
+                return Err(CtlError::local(
+                    "--follow needs a running server",
+                    "run `yogurt start`",
+                ));
+            }
+            let repo = yogurt_db::MeetingRepo::new(db);
+            let m = get_or_not_found(&repo, &id)?;
+            eprintln!("source: db");
+            if markdown {
+                print_markdown_header(&m.title, &m.id);
+            }
+            for s in parse_segments(&m.transcript_json) {
+                print_segment(json_out, markdown, &s);
+            }
+        }
+        Resolved::Server(c, id) if follow => follow_transcript(&c, &id, json_out, markdown).await?,
+        Resolved::Server(c, id) => {
+            let m: yogurt_db::Meeting = c.get(&format!("/api/meetings/{id}")).await?;
+            if markdown {
+                print_markdown_header(&m.title, &m.id);
+            }
+            for s in parse_segments(&m.transcript_json) {
+                print_segment(json_out, markdown, &s);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Polls the meeting row on an interval and prints new segments.
+/// Stops once the meeting has an `ended_at` and a poll produced nothing new, or on Ctrl-C.
+async fn follow_transcript(
+    c: &Client,
+    id: &str,
+    json_out: bool,
+    markdown: bool,
+) -> Result<(), CtlError> {
+    let mut printed = 0usize;
+    let mut header_printed = false;
+    loop {
+        let m: yogurt_db::Meeting = c.get(&format!("/api/meetings/{id}")).await?;
+        if markdown && !header_printed {
+            print_markdown_header(&m.title, &m.id);
+            header_printed = true;
+        }
+        let segs = parse_segments(&m.transcript_json);
+        let is_new = segs.len() > printed;
+        for s in &segs[printed.min(segs.len())..] {
+            print_segment(json_out, markdown, s);
+        }
+        printed = segs.len();
+        if m.ended_at.is_some() && !is_new {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    Ok(())
+}
+
+/// Blocks for the whole LLM generation. Prints `phase: sending` up front and a `phase: waiting` heartbeat every 5s,
+/// so a caller does not read a long pause as hung and retry.
+async fn enhance(
+    port_flag: Option<u16>,
+    json_out: bool,
+    meeting: &str,
+    template: Option<&str>,
+) -> Result<(), CtlError> {
+    let r = MeetingRef::parse(meeting);
+    let (c, id) = client_for_ref(port_flag, &r).await?;
+    let m: yogurt_db::Meeting = c.get(&format!("/api/meetings/{id}")).await?;
+    let body = json!({
+        "notes_md": m.notes_md,
+        "transcript_json": m.transcript_json,
+        "title": m.title,
+        "started_at_unix_ms": m.started_at,
+        "ended_at_unix_ms": m.ended_at,
+        "template": template,
+    });
+
+    eprintln!("phase: sending");
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            eprintln!("phase: waiting");
+        }
+    });
+    let result: Result<serde_json::Value, CtlError> =
+        c.post(&format!("/api/meetings/{id}/enhance"), &body).await;
+    ticker.abort();
+    let resp = result?;
+    eprintln!("phase: done");
+
+    let too_short = resp
+        .get("too_short")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if json_out {
+        println!("{resp}");
+    } else if too_short {
+        println!("too_short: meeting had no notes and a trivial transcript, nothing to enhance");
+    } else {
+        println!("enhanced {id}");
+        if let Some(t) = resp.get("template").and_then(|v| v.as_str()) {
+            println!("template: {t}");
+        }
+        if let Some(f) = resp.get("notes_file").and_then(|v| v.as_str()) {
+            println!("notes file: {f}");
+        }
+    }
+    Ok(())
+}
+
+async fn keep(
+    port_flag: Option<u16>,
+    json_out: bool,
+    version: KeepVersion,
+) -> Result<(), CtlError> {
+    match version {
+        KeepVersion::Previous { meeting } => {
+            let (c, id) = client_for_ref(port_flag, &MeetingRef::parse(&meeting)).await?;
+            let m: yogurt_db::Meeting = c
+                .post_empty(&format!("/api/meetings/{id}/previous-enhance/restore"))
+                .await?;
+            if json_out {
+                println!("{}", serde_json::to_string(&m).unwrap_or_default());
+            } else {
+                println!("restored the previous notes on {id}");
+            }
+        }
+        KeepVersion::New { meeting } => {
+            let (c, id) = client_for_ref(port_flag, &MeetingRef::parse(&meeting)).await?;
+            c.delete_no_body(&format!("/api/meetings/{id}/previous-enhance"))
+                .await?;
+            if json_out {
+                println!("{}", json!({ "id": id, "kept": "new" }));
+            } else {
+                println!("kept the new notes on {id}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `POST /api/meetings/:id/mic-muted`. It 409s for a meeting that is not recording (no capture thread to command), which propagates as `CtlError::Server`.
+/// No ref defaults to the currently recording meeting like bare `stop`, since `last` (most recently created) would usually be the wrong one.
+async fn mute(port_flag: Option<u16>, json_out: bool, action: MuteAction) -> Result<(), CtlError> {
+    let (muted, meeting) = match action {
+        MuteAction::On { meeting } => (true, meeting),
+        MuteAction::Off { meeting } => (false, meeting),
+    };
+    let (c, id) = match meeting {
+        Some(m) => client_for_ref(port_flag, &MeetingRef::parse(&m)).await?,
+        None => {
+            let c = Client::discover(port_flag).await?;
+            let active: Option<ActiveRef> = c.get("/api/meetings/active").await?;
+            match active {
+                Some(a) => (c, a.id),
+                None => {
+                    return Err(CtlError::local(
+                        "no active meeting to mute",
+                        "pass a meeting id, or start a recording first",
+                    ))
+                }
+            }
+        }
+    };
+    let _: serde_json::Value = c
+        .post(
+            &format!("/api/meetings/{id}/mic-muted"),
+            &json!({ "muted": muted }),
+        )
+        .await?;
+    let state = if muted { "muted" } else { "unmuted" };
+    if json_out {
+        println!("{}", json!({ "id": id, "muted": muted }));
+    } else {
+        println!("{state} {id}");
+    }
+    Ok(())
+}
+
+/// Percent-encodes a query-string value: byte-wise, `+` for space, `%XX` otherwise, which is correct for UTF-8.
+/// No workspace dependency exposes an encoder here.
+fn encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+async fn search(
+    port_flag: Option<u16>,
+    json_out: bool,
+    query: &str,
+    limit: Option<usize>,
+) -> Result<(), CtlError> {
+    let c = Client::discover(port_flag).await?;
+    let q = encode_query(query);
+    let (meetings, total) = collect_pages(Some(limit.unwrap_or(50)), async |l, o| {
+        c.get(&format!("/api/meetings/search?q={q}&limit={l}&offset={o}"))
+            .await
+    })
+    .await?;
+    if json_out {
+        println!("{}", json!({ "meetings": meetings, "total": total }));
+    } else {
+        println!("{total} meeting(s)");
+        for m in &meetings {
+            let state = if m.ended_at.is_some() {
+                "ended"
+            } else {
+                "live"
+            };
+            println!("{}  {state:<5}  {}", m.id, m.title);
+        }
+    }
+    Ok(())
+}
+
+async fn delete(
+    port_flag: Option<u16>,
+    json_out: bool,
+    meeting: &str,
+    dry_run: bool,
+    yes: bool,
+) -> Result<(), CtlError> {
+    let r = MeetingRef::parse(meeting);
+    let (c, id) = client_for_ref(port_flag, &r).await?;
+    let m: yogurt_db::Meeting = c.get(&format!("/api/meetings/{id}")).await?;
+
+    if dry_run {
+        if json_out {
+            println!(
+                "{}",
+                json!({ "dry_run": true, "id": id, "title": m.title, "created_at": m.created_at })
+            );
+        } else {
+            println!("would delete {id} \"{}\" ({})", m.title, m.created_at);
+        }
+        return Ok(());
+    }
+    if !yes {
+        return Err(CtlError::local(
+            format!(
+                "refusing to delete \"{}\" ({}) without --yes",
+                m.title, m.created_at
+            ),
+            "pass --yes to confirm, or --dry-run to preview",
+        ));
+    }
+
+    c.delete_no_body(&format!("/api/meetings/{id}?delete_file=true"))
+        .await?;
+    if json_out {
+        println!(
+            "{}",
+            json!({ "status": "deleted", "id": id, "title": m.title })
+        );
+    } else {
+        println!("deleted {id} \"{}\"", m.title);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_pages, MeetingRef};
+
+    #[test]
+    fn plain_id_is_id() {
+        assert_eq!(
+            MeetingRef::parse("01a060ee-1fa5-7fc0-952a-1f67a5f38172"),
+            MeetingRef::Id("01a060ee-1fa5-7fc0-952a-1f67a5f38172".to_string())
+        );
+    }
+
+    #[test]
+    fn last_is_last() {
+        assert_eq!(MeetingRef::parse("last"), MeetingRef::Last);
+    }
+
+    #[test]
+    fn meeting_url_carries_port_and_id() {
+        assert_eq!(
+            MeetingRef::parse("http://127.0.0.1:7879/meeting/abc123"),
+            MeetingRef::Url {
+                port: 7879,
+                id: "abc123".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn post_suffixed_meeting_url_carries_port_and_id() {
+        assert_eq!(
+            MeetingRef::parse("http://127.0.0.1:7879/meeting/abc123/post"),
+            MeetingRef::Url {
+                port: 7879,
+                id: "abc123".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_non_meeting_url_falls_back_to_a_bare_id() {
+        assert_eq!(
+            MeetingRef::parse("not a url or id"),
+            MeetingRef::Id("not a url or id".to_string())
+        );
+    }
+
+    #[test]
+    fn encode_query_escapes_spaces_and_specials_but_not_plain_words() {
+        assert_eq!(super::encode_query("standup"), "standup");
+        assert_eq!(super::encode_query("q4 planning"), "q4+planning");
+        assert_eq!(super::encode_query("50% done?"), "50%25+done%3F");
+    }
+
+    fn fake_page(all: usize, limit: usize, offset: usize) -> yogurt_db::MeetingPage {
+        let meetings = (offset..all.min(offset + limit))
+            .map(|i| yogurt_db::MeetingSummary {
+                id: i.to_string(),
+                title: format!("m{i}"),
+                started_at: 0,
+                ended_at: None,
+                starred: false,
+                stt_engine: None,
+                llm_model: None,
+                has_enriched: false,
+                labels: vec![],
+                source: None,
+                source_owner: None,
+                title_suggestions: None,
+            })
+            .collect();
+        yogurt_db::MeetingPage {
+            meetings,
+            total: all,
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_pages_walks_every_page_at_the_server_max() {
+        let mut calls = Vec::new();
+        let (rows, total) = collect_pages(None, async |l, o| {
+            calls.push((l, o));
+            Ok(fake_page(250, l, o))
+        })
+        .await
+        .unwrap();
+        assert_eq!((rows.len(), total), (250, 250));
+        assert_eq!(calls, [(100, 0), (100, 100), (100, 200)]);
+    }
+
+    #[tokio::test]
+    async fn collect_pages_stops_at_the_limit_and_keeps_the_total() {
+        let mut calls = Vec::new();
+        let (rows, total) = collect_pages(Some(150), async |l, o| {
+            calls.push((l, o));
+            Ok(fake_page(250, l, o))
+        })
+        .await
+        .unwrap();
+        assert_eq!((rows.len(), total), (150, 250));
+        assert_eq!(calls, [(100, 0), (50, 100)]);
+    }
+
+    #[tokio::test]
+    async fn collect_pages_handles_empty_and_zero_limit() {
+        let (rows, total) = collect_pages(None, async |l, o| Ok(fake_page(0, l, o)))
+            .await
+            .unwrap();
+        assert_eq!((rows.len(), total), (0, 0));
+        let (rows, total) = collect_pages(Some(0), async |l, o| Ok(fake_page(5, l, o)))
+            .await
+            .unwrap();
+        assert_eq!((rows.len(), total), (0, 5));
+    }
+}

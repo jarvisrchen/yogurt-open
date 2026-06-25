@@ -1,0 +1,61 @@
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { Card } from "./Card";
+
+describe("Card", () => {
+  it("renders children", () => {
+    render(
+      <Card>
+        <h2>Hello</h2>
+      </Card>
+    );
+    expect(screen.getByRole("heading", { name: /hello/i })).toBeInTheDocument();
+  });
+
+  it("applies card surface classes by default", () => {
+    const { container } = render(<Card>x</Card>);
+    const el = container.firstChild as HTMLElement;
+    expect(el.className).toMatch(/bg-card/);
+    expect(el.className).toMatch(/rounded-card/);
+    expect(el.className).toMatch(/shadow-card/);
+  });
+
+  it("supports an 'active' variant with a blueberry hairline border", () => {
+    const { container } = render(<Card active>active</Card>);
+    const el = container.firstChild as HTMLElement;
+    expect(el.className).toMatch(/border-blue/);
+  });
+
+  it("supports padding sizes", () => {
+    const { container } = render(<Card padding="lg">x</Card>);
+    const el = container.firstChild as HTMLElement;
+    expect(el.className).toMatch(/p-8/);
+  });
+
+  it("renders as an <article> when as='article'", () => {
+    const { container } = render(<Card as="article">x</Card>);
+    expect(container.querySelector("article")).not.toBeNull();
+  });
+
+  it("forwards extra props (onClick) to the rendered element (MD-01)", () => {
+    const onClick = vi.fn();
+    render(
+      <Card as="button" onClick={onClick} aria-label="clickable card">
+        clickable
+      </Card>,
+    );
+    const btn = screen.getByRole("button", { name: /clickable card/i });
+    fireEvent.click(btn);
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it("forwards aria-* attributes to the rendered element (MD-01)", () => {
+    const { container } = render(
+      <Card aria-label="meeting card" data-testid="card-x">
+        x
+      </Card>,
+    );
+    const el = container.querySelector('[data-testid="card-x"]')!;
+    expect(el.getAttribute("aria-label")).toBe("meeting card");
+  });
+});

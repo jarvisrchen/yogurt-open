@@ -1,0 +1,175 @@
+mod common;
+
+use assert_cmd::Command;
+use std::net::TcpListener as StdTcpListener;
+use std::time::Duration;
+
+#[test]
+fn it_prints_help() {
+    let mut cmd = Command::cargo_bin("yogurt").expect("binary exists");
+    cmd.arg("--help");
+    let output = cmd.assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("yogurt"),
+        "help should mention the binary name"
+    );
+    assert!(
+        stdout.contains("start"),
+        "help should mention the `start` subcommand"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_starts_server_and_serves_health() {
+    // SET-12 follow-up: see it_reports_port_conflict_with_friendly_error
+    // for HOME-tempdir rationale.
+    let tmp = tempfile::tempdir().expect("create tempdir for HOME");
+
+    let server = common::start(|c| {
+        c.env("HOME", tmp.path()).env("YOGURT_MEMORY_KEYSTORE", "1");
+    })
+    .await;
+    let body = reqwest::get(format!("http://127.0.0.1:{}/api/health", server.port))
+        .await
+        .expect("health")
+        .text()
+        .await
+        .expect("health body");
+    assert!(
+        body.contains("\"status\":\"ok\""),
+        "unexpected health body: {body:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_reports_port_conflict_with_friendly_error() {
+    // Occupy an ephemeral kernel-assigned port from the test process and
+    // keep it held — fully deterministic, no fixed-port (old 17883) races.
+    // Re-roll in the unlikely event we land on 65535: the "+1 suggestion"
+    // assertion below would overflow the port space (that boundary has its
+    // own dedicated test).
+    let listener = loop {
+        let l = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        if l.local_addr().expect("local_addr").port() != u16::MAX {
+            break l;
+        }
+    };
+    let port = listener.local_addr().expect("local_addr").port();
+
+    // SET-12 follow-up: redirect HOME to a tempdir so the spawned `yogurt`
+    // subprocess doesn't touch the developer's real ~/.yogurt/db.sqlite
+    // (which may be at a higher migration version than the test binary
+    // knows about, causing DatabaseTooFarAhead errors that mask the actual
+    // port-conflict assertion).
+    let tmp = tempfile::tempdir().expect("create tempdir for HOME");
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_yogurt"))
+        .args(["start", "--port", &port.to_string(), "--no-open"])
+        .env("HOME", tmp.path())
+        .env("YOGURT_MEMORY_KEYSTORE", "1")
+        .output()
+        .await
+        .expect("spawn yogurt");
+
+    drop(listener); // release port for other tests
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit; got {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already in use"),
+        "stderr should contain 'already in use'; got: {stderr}"
+    );
+    let next = port + 1;
+    assert!(
+        stderr.contains(&format!("--port {next}")),
+        "stderr should suggest --port {next}; got: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("lsof -i :{port}")),
+        "stderr should suggest lsof -i :{port}; got: {stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_does_not_suggest_port_0_at_upper_boundary() {
+    // HI-01 regression: --port 65535 must NOT suggest --port 0 (which on Unix
+    // means "ephemeral bind" -- terrible advice). Use 65535 as the held port.
+    let listener = StdTcpListener::bind("127.0.0.1:65535");
+    if listener.is_err() {
+        // 65535 may be unavailable in CI sandbox; skip rather than fail.
+        eprintln!("skipping: cannot bind 127.0.0.1:65535 in this environment");
+        return;
+    }
+    let _listener = listener.unwrap();
+
+    // SET-12 follow-up: see it_reports_port_conflict_with_friendly_error
+    // for rationale on the HOME tempdir.
+    let tmp = tempfile::tempdir().expect("create tempdir for HOME");
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_yogurt"))
+        .args(["start", "--port", "65535", "--no-open"])
+        .env("HOME", tmp.path())
+        .env("YOGURT_MEMORY_KEYSTORE", "1")
+        .output()
+        .await
+        .expect("spawn yogurt");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already in use"),
+        "stderr should contain 'already in use'; got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("--port 0"),
+        "stderr must NOT suggest --port 0 (kernel ephemeral); got: {stderr}"
+    );
+    assert!(
+        stderr.contains("lsof -i :65535"),
+        "stderr should suggest lsof at boundary; got: {stderr}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_writes_a_log_file_under_the_data_dir() {
+    let home = tempfile::tempdir().expect("HOME tempdir");
+    let data = tempfile::tempdir().expect("data dir tempdir");
+    let probe = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let port = probe.local_addr().expect("local_addr").port();
+    drop(probe);
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_yogurt"))
+        .args(["start", "--port", &port.to_string(), "--no-open"])
+        .env("HOME", home.path())
+        .env("YOGURT_DATA_DIR", data.path())
+        .env("YOGURT_MEMORY_KEYSTORE", "1")
+        .spawn()
+        .expect("spawn yogurt");
+
+    // The file appender flushes on a background thread, so poll for the line.
+    // 30 s: right after a full `just test` relink, the 77 MB debug binary took over 5 s to log its first line.
+    let logs = data.path().join("logs");
+    let mut text = String::new();
+    for _ in 0..600 {
+        text = std::fs::read_dir(&logs)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect();
+        if text.contains("yogurt is starting") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    child.kill().await.ok();
+    assert!(
+        text.contains("yogurt is starting"),
+        "no startup line under {}: {text:?}",
+        logs.display()
+    );
+}

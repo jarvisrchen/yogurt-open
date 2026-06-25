@@ -1,0 +1,47 @@
+[package]
+name = "yogurt-llm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+pro = []
+# `LocalLlamaClient`, the built-in cleanup model over llama.cpp. Off by default so the crate builds without CMake.
+local = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2", "dep:tracing"]
+
+[dependencies]
+# HTTP transport for OpenAI-compatible /chat/completions calls.
+reqwest = { workspace = true }
+# Wire-type (de)serialization + opaque-JSON forwarding.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `tokio::time::timeout` for callers.
+tokio = { workspace = true }
+# `StreamExt::map`/`.boxed()` on the SSE byte stream + BoxStream type alias.
+futures-util = { workspace = true }
+# SSE chunk parser composed onto reqwest's bytes_stream().
+eventsource-stream = { workspace = true }
+# Dyn-compatible async trait for `LlmClient`. Keep it object-safe.
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+# The <think> stripper, shared with the WASM enhance in yogurt-notes.
+yogurt-prompts = { path = "../yogurt-prompts" }
+llama-cpp-2 = { workspace = true, optional = true }
+# Not used directly: pinned here so a lockfile update cannot move llama.cpp's C code.
+llama-cpp-sys-2 = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Stand-in OpenAI-compatible HTTP server for adapter tests
+# (non-streaming + SSE). Workspace-pinned so all crates share one wiremock.
+wiremock = { workspace = true }
+# `#[tokio::test]` + multi-thread runtime for the async wiremock tests.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "cleanup_dictionary_cost"
+required-features = ["local"]

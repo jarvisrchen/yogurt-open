@@ -1,0 +1,218 @@
+//! Structural block diff/merge between user_md and enriched_md.
+//! An enriched block whose key matches a user block is emitted as `Source::User` with the user's exact text.
+//! Any other block is `Source::AiGrey` with a best-effort transcript timestamp.
+//! An inline pass then records the user's lines woven into AI blocks as `user_runs`.
+//! Finally, user blocks the model dropped are appended so user text is never lost.
+
+use crate::ast::{block_key, strip_markers, Block};
+use crate::{ts, weave, MergedBlock, Source, TranscriptSegment};
+
+pub fn merge(
+    user: &[Block],
+    enriched: &[Block],
+    transcript: &[TranscriptSegment],
+) -> Vec<MergedBlock> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut user_by_key: HashMap<String, &Block> = HashMap::new();
+    for b in user {
+        user_by_key.insert(block_key(b), b);
+    }
+
+    let mut seen_user_keys: HashSet<String> = HashSet::new();
+    let mut out: Vec<MergedBlock> = Vec::with_capacity(enriched.len() + 4);
+
+    for b in enriched {
+        let k = block_key(b);
+        if let Some(user_block) = user_by_key.get(&k) {
+            seen_user_keys.insert(k);
+            // The user's block shape wins too, keeping nesting depth when the model flattens.
+            // A bare paragraph the model filed as a bullet stays a bullet, so the note sits in the list.
+            let block = match (*user_block, b) {
+                (Block::Paragraph { md }, Block::ListItem { depth, .. }) => Block::ListItem {
+                    md: md.clone(),
+                    depth: *depth,
+                },
+                _ => (*user_block).clone(),
+            };
+            out.push(MergedBlock {
+                block,
+                source: Source::User,
+                user_runs: Vec::new(),
+            });
+        } else {
+            let body_text = block_md_text(b);
+            let ts_sec = ts::guess_ts_sec(&body_text, transcript).unwrap_or(0);
+            out.push(MergedBlock {
+                block: b.clone(),
+                source: Source::AiGrey {
+                    transcript_ts_sec: ts_sec,
+                },
+                user_runs: Vec::new(),
+            });
+        }
+    }
+
+    let user_lines: Vec<(String, String)> = user
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph { md } | Block::ListItem { md, .. } => {
+                Some((block_key(b), strip_markers(md)))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut absorbed: HashSet<String> = HashSet::new();
+    for mb in out.iter_mut() {
+        if !matches!(mb.source, Source::AiGrey { .. }) {
+            continue;
+        }
+        let md = match &mb.block {
+            Block::Paragraph { md } | Block::ListItem { md, .. } => md,
+            _ => continue,
+        };
+        let text = strip_markers(md);
+        let mut runs = Vec::new();
+        // A line paints into the first bullet that carries it, so a summary bullet repeating its words stays grey.
+        for (key, line) in &user_lines {
+            if absorbed.contains(key) {
+                continue;
+            }
+            if let Some(r) = weave::find_user_line(&text, line) {
+                runs.push(r);
+                absorbed.insert(key.clone());
+            }
+        }
+        mb.user_runs = weave::merge_ranges(runs);
+    }
+
+    for b in user {
+        let k = block_key(b);
+        if !seen_user_keys.contains(&k) && !absorbed.contains(&k) {
+            out.push(MergedBlock {
+                block: b.clone(),
+                source: Source::User,
+                user_runs: Vec::new(),
+            });
+        }
+    }
+
+    out
+}
+
+fn block_md_text(b: &Block) -> String {
+    match b {
+        Block::Heading { text, .. } => text.clone(),
+        Block::Paragraph { md } | Block::ListItem { md, .. } | Block::BlockQuote { md } => {
+            md.clone()
+        }
+        Block::CodeBlock { body, .. } => body.clone(),
+        Block::Hr => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_paragraph_the_model_bulletized_stays_a_bullet_with_user_text() {
+        let user = vec![Block::Paragraph {
+            md: "5% users on Tuesday".into(),
+        }];
+        let enriched = vec![
+            Block::ListItem {
+                md: "5% users on Tuesday".into(),
+                depth: 0,
+            },
+            Block::ListItem {
+                md: "Error rate at 0.3%".into(),
+                depth: 0,
+            },
+        ];
+        let out = merge(&user, &enriched, &[]);
+        assert_eq!(out.len(), 2, "no duplicate appended: {out:?}");
+        assert!(out[0].user_runs.is_empty());
+        assert_eq!(
+            out[0].block,
+            Block::ListItem {
+                md: "5% users on Tuesday".into(),
+                depth: 0
+            }
+        );
+        assert_eq!(out[0].source, Source::User);
+        assert!(matches!(out[1].source, Source::AiGrey { .. }));
+    }
+
+    #[test]
+    fn one_word_note_folded_into_an_ai_bullet_is_painted_not_appended() {
+        let user = vec![
+            Block::Paragraph { md: "247k".into() },
+            Block::Paragraph {
+                md: "464k RSU".into(),
+            },
+        ];
+        let enriched = vec![
+            Block::ListItem {
+                md: "Base salary: 247k".into(),
+                depth: 0,
+            },
+            Block::ListItem {
+                md: "464k RSU with quarterly vesting at 6.25%".into(),
+                depth: 0,
+            },
+        ];
+        let out = merge(&user, &enriched, &[]);
+        assert_eq!(out.len(), 2, "no orphan append: {out:?}");
+        assert_eq!(out[0].user_runs, vec![(13, 17)]);
+        assert_eq!(out[1].user_runs, vec![(0, 8)]);
+    }
+
+    #[test]
+    fn a_note_paints_only_the_first_bullet_that_carries_it() {
+        let user = vec![Block::Paragraph {
+            md: "pro tier annual".into(),
+        }];
+        let enriched = vec![
+            Block::ListItem {
+                md: "Pro tier: annual plan at $180".into(),
+                depth: 0,
+            },
+            Block::ListItem {
+                md: "Price change for the pro tier and limits on the annual discount".into(),
+                depth: 0,
+            },
+        ];
+        let out = merge(&user, &enriched, &[]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0].user_runs, vec![(0, 16)]);
+        assert!(out[1].user_runs.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn user_line_woven_into_an_ai_bullet_is_painted_not_appended() {
+        let user = vec![
+            Block::Paragraph {
+                md: "25% on monday".into(),
+            },
+            Block::Paragraph {
+                md: "totally unrelated line".into(),
+            },
+        ];
+        let enriched = vec![Block::ListItem {
+            md: "Rollout: 25% on Monday the 5th, then 50% the following week".into(),
+            depth: 0,
+        }];
+        let out = merge(&user, &enriched, &[]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(matches!(out[0].source, Source::AiGrey { .. }));
+        assert_eq!(out[0].user_runs, vec![(9, 22)]);
+        assert_eq!(out[1].source, Source::User);
+        assert_eq!(
+            out[1].block,
+            Block::Paragraph {
+                md: "totally unrelated line".into()
+            }
+        );
+    }
+}

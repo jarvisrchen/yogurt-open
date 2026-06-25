@@ -1,0 +1,11 @@
+{
+  "about": "List prices in US dollars per million tokens for the Voice cleanup models, read by the Mac and the Android app. Model names match case-insensitively. A model running on the user's own machine costs $0 without an entry here, and any other model missing here counts as unpriced. Checked 2026-11-09; Celeris added from https://docs.celeris.ai/pricing on 2026-11-10.",
+  "models": {
+    "celeris-1": { "input": 0.2, "output": 0.7 },
+    "gemini-3.5-flash-lite": { "input": 0.3, "output": 2.5 },
+    "deepseek-v4-flash": { "input": 0.3, "output": 1.2 },
+    "deepseek-flash": { "input": 0.3, "output": 1.2 },
+    "MiniMax-M3": { "input": 0.3, "output": 1.2 },
+    "MiniMax-M3.1-Flash": { "input": 0.15, "output": 0.6 }
+  }
+}

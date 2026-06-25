@@ -1,0 +1,165 @@
+//! Locates the user's note lines inside an AI block so the render paints just those words ink.
+//! Without it, a note and the model's expansion of it show as two separate bullets.
+
+/// A single-word note ("247k") is the kind of line the model folds into a richer bullet.
+/// Matching is whole-word, so it only lands where that word appears.
+const MIN_WORDS: usize = 1;
+/// Fraction of the line's words that must appear in order.
+const MIN_RATIO: f32 = 0.75;
+/// Model words allowed between the line's words, however short the line.
+/// Notes are shorthand: `pro tier $18?` comes back as "Pro tier: Dana proposed moving it to $18".
+const MIN_GAP_WORDS: usize = 6;
+
+/// Byte range of marker-stripped `text` carrying `line`, within a window of the line's words plus
+/// as many interleaved model words, and at least `MIN_GAP_WORDS` of them.
+/// The range spans first to last matched word, so interleaved model words are painted ink too.
+pub fn find_user_line(text: &str, line: &str) -> Option<(usize, usize)> {
+    let want: Vec<String> = words(line).into_iter().map(|(_, _, w)| w).collect();
+    if want.len() < MIN_WORDS {
+        return None;
+    }
+    let have = words(text);
+    let max_span = want.len() + (want.len() + 1).max(MIN_GAP_WORDS);
+    // (matched, start_idx, end_idx)
+    let mut best: Option<(usize, usize, usize)> = None;
+    for (i, tok) in have.iter().enumerate() {
+        if tok.2 != want[0] {
+            continue;
+        }
+        let limit = (i + max_span).min(have.len());
+        let mut matched = 1;
+        let mut last = i;
+        let mut j = i + 1;
+        for w in &want[1..] {
+            if let Some(k) = (j..limit).find(|&k| have[k].2 == *w) {
+                matched += 1;
+                last = k;
+                j = k + 1;
+            }
+        }
+        let better = match best {
+            None => true,
+            Some((m, s, e)) => matched > m || (matched == m && last - i < e - s),
+        };
+        if better {
+            best = Some((matched, i, last));
+        }
+    }
+    let (matched, s, e) = best?;
+    if matched < MIN_WORDS || (matched as f32) < (want.len() as f32) * MIN_RATIO {
+        return None;
+    }
+    Some((have[s].0, have[e].1))
+}
+
+pub fn merge_ranges(mut runs: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    runs.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(runs.len());
+    for (a, b) in runs {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// Words with byte spans, lowercased with edge punctuation trimmed.
+fn words(s: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in s.char_indices() {
+        if c.is_whitespace() {
+            if let Some(st) = start.take() {
+                push_word(s, st, i, &mut out);
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(st) = start {
+        push_word(s, st, s.len(), &mut out);
+    }
+    out
+}
+
+fn push_word(s: &str, st: usize, end: usize, out: &mut Vec<(usize, usize, String)>) {
+    let raw = &s[st..end];
+    let keep = |c: char| c.is_alphanumeric() || c == '%' || c == '$';
+    let lead = raw.len() - raw.trim_start_matches(|c| !keep(c)).len();
+    let trail = raw.len() - raw.trim_end_matches(|c| !keep(c)).len();
+    if lead + trail >= raw.len() {
+        return;
+    }
+    let (a, b) = (st + lead, end - trail);
+    out.push((a, b, s[a..b].to_lowercase()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_words_inside_a_longer_bullet() {
+        let t = "Rollout: 25% on Monday the 5th, then 50% the following week";
+        let r = find_user_line(t, "25% on monday").unwrap();
+        assert_eq!(&t[r.0..r.1], "25% on Monday");
+    }
+
+    #[test]
+    fn interleaved_model_words_are_swallowed_into_the_run() {
+        let t =
+            "Dan: ask Jordan today for updated cost numbers (Finance wants a per-user estimate)";
+        let r = find_user_line(t, "ask jordan for cost numbers").unwrap();
+        assert_eq!(&t[r.0..r.1], "ask Jordan today for updated cost numbers");
+    }
+
+    #[test]
+    fn shorthand_note_matches_across_a_model_clause() {
+        let t = "Pro tier: Dana proposed moving it to $18 a month and $180 a year.";
+        let r = find_user_line(t, "pro tier $18?").unwrap();
+        assert_eq!(&t[r.0..r.1], "Pro tier: Dana proposed moving it to $18");
+    }
+
+    #[test]
+    fn a_short_note_does_not_reach_across_a_whole_sentence() {
+        assert_eq!(
+            find_user_line(
+                "We will ship the new pricing page once legal signs it",
+                "ship it"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn too_few_words_matched_is_no_match() {
+        assert_eq!(
+            find_user_line(
+                "Sam: ping Priya about the language eval",
+                "ask jordan for cost numbers"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn one_word_note_matches_as_a_whole_word() {
+        let t = "Base salary: 247k";
+        let r = find_user_line(t, "247k").unwrap();
+        assert_eq!(&t[r.0..r.1], "247k");
+        assert_eq!(
+            find_user_line("kill switch before Monday", "switch"),
+            Some((5, 11))
+        );
+        assert_eq!(find_user_line("flip the switches", "switch"), None);
+    }
+
+    #[test]
+    fn merge_ranges_collapses_overlaps() {
+        assert_eq!(
+            merge_ranges(vec![(10, 20), (0, 5), (15, 30)]),
+            vec![(0, 5), (10, 30)]
+        );
+    }
+}

@@ -1,0 +1,64 @@
+[package]
+name = "yogurt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[[bin]]
+name = "yogurt"
+path = "src/main.rs"
+
+[features]
+default = []
+pro = []
+
+[dependencies]
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
+anyhow = { workspace = true }
+# No `version =` on this path dep on purpose. It would have to be bumped by
+# hand every release, and forgetting breaks `cargo update --workspace` with
+# "failed to select a version for the requirement yogurt-server". A version
+# is only required here to publish to crates.io, which is descoped (see the
+# note at the bottom of .github/workflows/release.yml). Restore it if that
+# ever comes back.
+yogurt-server = { path = "../yogurt-server", default-features = false }
+open = "5"
+# Gated on the `--dev` flag at the top of main(). Release builds never read
+# .env.local. See main.rs and tests/dev_env_local.rs.
+dotenvy = { workspace = true }
+# `yogurt doctor` reads provider names and the active STT from the real SQLite
+# settings store, and screen-recording permission from the real TCC check.
+yogurt-db = { path = "../yogurt-db", default-features = false }
+yogurt-audio = { path = "../yogurt-audio", default-features = false }
+yogurt-voice = { path = "../yogurt-voice" }
+# `doctor` must resolve models the same way the app does, or it reports
+# "none downloaded" for a Homebrew-installed model the app is transcribing with.
+yogurt-stt = { path = "../yogurt-stt", features = ["local-stt"] }
+# Same `directories` crate yogurt-db/yogurt-stt use for `~/.yogurt`
+# resolution (do NOT use the unmaintained `dirs` crate).
+directories = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `yogurt ctl` talks HTTP to the running server.
+reqwest = { workspace = true }
+# `yogurt ctl ws` and `models download --wait` speak the server's WebSocket surface.
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+# CLI tests redirect HOME to a tempdir so spawned subprocesses don't touch the
+# developer's real ~/.yogurt/db.sqlite.
+tempfile = { workspace = true }

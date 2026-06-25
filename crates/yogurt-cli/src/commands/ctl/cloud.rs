@@ -1,0 +1,252 @@
+//! Yogurt Cloud: status, push, and rename. Connecting takes a password, so it stays in the UI: no `ctl` command sets, reveals, or accepts a Cloud secret.
+
+use clap::Subcommand;
+use serde_json::{json, Value};
+
+use super::client::{Client, CtlError};
+
+#[derive(Subcommand, Debug)]
+pub enum CloudCmd {
+    /// Whether this instance is connected, how many meetings are not pushed, and the last push result.
+    Status,
+    /// Push changed meetings to the connected Yogurt Cloud now.
+    Push,
+    /// Rename this Mac in the connected Yogurt Cloud.
+    Rename {
+        /// 1 to 80 characters.
+        name: String,
+    },
+}
+
+pub async fn run(cmd: CloudCmd, port: Option<u16>, json_out: bool) -> Result<(), CtlError> {
+    // Cloud sync lives in Pro, so a free build's own server has no Cloud routes to call.
+    if cfg!(not(feature = "pro")) {
+        return Err(CtlError::local(
+            "this build has no Cloud sync",
+            "Cloud sync needs Yogurt Pro, from yogurt-ai.dev",
+        ));
+    }
+    let c = Client::discover(port).await?;
+    match cmd {
+        CloudCmd::Status => {
+            let v: Value = c.get("/api/cloud").await.map_err(with_help)?;
+            if json_out {
+                println!("{v}");
+            } else {
+                print_status(&v);
+            }
+        }
+        CloudCmd::Rename { name } => {
+            let v: Value = c
+                .post("/api/cloud/machine-name", &json!({ "machine_name": name }))
+                .await
+                .map_err(with_help)?;
+            if json_out {
+                println!("{}", json!({ "machine_name": v["machine_name"] }));
+            } else {
+                println!("renamed: {}", v["machine_name"].as_str().unwrap_or("?"));
+            }
+        }
+        CloudCmd::Push => {
+            let _: Value = c
+                .post("/api/cloud/push", &json!({}))
+                .await
+                .map_err(with_help)?;
+            let v = loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let v: Value = c.get("/api/cloud").await.map_err(with_help)?;
+                if v["push"].is_null() {
+                    break v;
+                }
+            };
+            if json_out {
+                println!(
+                    "{}",
+                    json!({ "last_push": v["last_push"], "last_error": v["last_error"] })
+                );
+            } else if let Some(err) = v["last_error"]["error"]
+                .as_str()
+                .filter(|_| v["last_error"]["at"].as_i64() > v["last_push"]["at"].as_i64())
+            {
+                return Err(CtlError::local(
+                    err.to_string(),
+                    "check `yogurt ctl cloud status`",
+                ));
+            } else {
+                println!("{}", describe_push(&v["last_push"]));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adds the one place that can fix each failure. The branch is on the server's stable `code`, never on its wording.
+fn with_help(e: CtlError) -> CtlError {
+    let CtlError::Coded { code, message } = e else {
+        return e;
+    };
+    let help = match code.as_str() {
+        "not_connected" => "connect in Settings > Cloud sync, in the browser",
+        "session_expired" => "sign in again in Settings > Cloud sync, in the browser",
+        "passcode_not_set" => "choose a PIN in the Yogurt Cloud webapp first",
+        "device_removed" => "disconnect in Settings > Cloud sync, then connect again",
+        "cloud_outdated" => "redeploy the Yogurt Cloud, then try again",
+        "push_running" => "wait for the push to finish",
+        _ => "check `yogurt ctl cloud status`",
+    };
+    CtlError::local(message, help)
+}
+
+fn describe_push(v: &Value) -> String {
+    let n = |k: &str| v[k].as_i64().unwrap_or(0);
+    format!(
+        "pushed: {} uploaded, {} deleted",
+        n("changed"),
+        n("deleted")
+    )
+}
+
+fn describe_interval(v: &str) -> &'static str {
+    match v {
+        "meeting" => "after each meeting",
+        "15m" => "every 15 minutes",
+        "1h" => "every hour",
+        "1d" => "every day",
+        _ => "off",
+    }
+}
+
+/// The timer wakes once a minute, so the last minute reads as "about a minute".
+fn describe_next(at: Option<i64>, now: i64) -> String {
+    let Some(at) = at else {
+        return "paused until the last error is fixed".into();
+    };
+    let min = (at - now + 59_999) / 60_000;
+    match (min / 60, min % 60) {
+        _ if min <= 1 => "next push in about a minute".into(),
+        (0, m) => format!("next push in {m} min"),
+        (h, 0) => format!("next push in {h} h"),
+        (h, m) => format!("next push in {h} h {m} min"),
+    }
+}
+
+/// Rounds as the web's `formatBytes` does, so both say the same size.
+fn describe_size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1_000_000 => format!("{} KB", b.div_ceil(1000)),
+        b if b < 1_000_000_000 => format!("{} MB", b / 1_000_000),
+        b => format!("{:.1} GB", b as f64 / 1e6 / 1024.0),
+    }
+}
+
+fn describe_time(secs: u64) -> String {
+    match secs.div_ceil(60) {
+        0 | 1 => "under a minute".into(),
+        m if m < 60 => format!("about {m} min"),
+        m => format!("about {} h", (m as f64 / 6.0).round() / 10.0),
+    }
+}
+
+fn print_status(v: &Value) {
+    if v["connected"] != json!(true) {
+        println!("cloud: not connected");
+        return;
+    }
+    let s = |k: &str| v[k].as_str().unwrap_or("?");
+    println!(
+        "cloud: connected as {} to {}",
+        s("machine_name"),
+        s("address")
+    );
+    println!("login: {}", s("email"));
+    let secs = v["push_estimate_secs"].as_u64().unwrap_or(0);
+    let estimate = if secs > 0 {
+        format!(
+            " ({}, {} to push)",
+            describe_size(v["not_pushed_bytes"].as_u64().unwrap_or(0)),
+            describe_time(secs)
+        )
+    } else {
+        String::new()
+    };
+    println!(
+        "meetings: {} on this Mac, {} not pushed{estimate}",
+        v["meetings"], v["not_pushed"]
+    );
+    let interval = s("push_interval");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    match interval {
+        "off" | "?" => println!("auto-push: off"),
+        _ => println!(
+            "auto-push: {}, {}",
+            describe_interval(interval),
+            describe_next(v["next_push"].as_i64(), now)
+        ),
+    }
+    if let Some(sent) = v["push"]["sent"].as_u64() {
+        let left = v["push"]["left_secs"]
+            .as_u64()
+            .map(|s| format!(", {} left", describe_time(s)))
+            .unwrap_or_default();
+        println!("push: running, {sent} of {} sent{left}", v["push"]["total"]);
+    }
+    let last = &v["last_push"];
+    if last.is_null() {
+        println!("last push: never");
+    } else if let Some(err) = last["error"].as_str() {
+        println!(
+            "last push: failed ({}): {err}",
+            last["code"].as_str().unwrap_or("?")
+        );
+    } else {
+        println!("last push: {}", describe_push(last));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_estimate_reads_in_round_units() {
+        assert_eq!(describe_size(20_400), "21 KB");
+        assert_eq!(describe_size(62_900_000), "62 MB");
+        assert_eq!(describe_size(1_260_000_000), "1.2 GB");
+        assert_eq!(describe_time(40), "under a minute");
+        assert_eq!(describe_time(610), "about 11 min");
+        assert_eq!(describe_time(5_400), "about 1.5 h");
+    }
+
+    #[test]
+    fn next_push_reads_as_a_countdown() {
+        const MIN: i64 = 60_000;
+        assert_eq!(describe_next(Some(MIN), 0), "next push in about a minute");
+        assert_eq!(describe_next(Some(15 * MIN), 0), "next push in 15 min");
+        assert_eq!(describe_next(Some(60 * MIN), 0), "next push in 1 h");
+        assert_eq!(
+            describe_next(Some(23 * 60 * MIN + 30_000), 0),
+            "next push in 23 h 1 min"
+        );
+        assert_eq!(
+            describe_next(None, 0),
+            "paused until the last error is fixed"
+        );
+    }
+
+    #[test]
+    fn interval_reads_plainly() {
+        assert_eq!(describe_interval("1h"), "every hour");
+        assert_eq!(describe_interval("off"), "off");
+        assert_eq!(describe_interval("?"), "off");
+    }
+
+    #[test]
+    fn push_summary_reads_counts() {
+        assert_eq!(
+            describe_push(&json!({"changed": 2, "deleted": 1})),
+            "pushed: 2 uploaded, 1 deleted"
+        );
+    }
+}

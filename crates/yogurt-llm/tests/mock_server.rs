@@ -1,0 +1,437 @@
+//! Non-streaming `OpenAiCompatClient::complete` against a wiremock stand-in OpenAI server.
+
+use serde_json::json;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use yogurt_llm::{ChatMessage, ChatRequest, LlmClient, OpenAiCompatClient};
+
+/// Matches only when no `authorization` header is present (wiremock has no built-in absent-header matcher).
+struct NoAuthHeader;
+
+impl wiremock::Match for NoAuthHeader {
+    fn matches(&self, request: &Request) -> bool {
+        request.headers.get("authorization").is_none()
+    }
+}
+
+struct ReasoningSplit(bool);
+
+impl wiremock::Match for ReasoningSplit {
+    fn matches(&self, request: &Request) -> bool {
+        serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()
+            .and_then(|body| {
+                body.get("reasoning_split")
+                    .and_then(|value| value.as_bool())
+            })
+            == Some(self.0)
+    }
+}
+
+/// Matches a body whose `thinking.type` equals the given value, or with `None` a body with no `thinking` key.
+struct Thinking(Option<&'static str>);
+
+impl wiremock::Match for Thinking {
+    fn matches(&self, request: &Request) -> bool {
+        serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()
+            .map(|body| {
+                body.get("thinking")
+                    .and_then(|t| t.get("type"))
+                    .and_then(|v| v.as_str())
+                    == self.0
+            })
+            .unwrap_or(false)
+    }
+}
+
+#[tokio::test]
+async fn it_sends_messages_and_returns_assistant_content() {
+    let server = MockServer::start().await;
+    // `.expect(1)` fires on Mock drop if the call never happens.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer sk-test"))
+        .and(Thinking(None))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-abc",
+            "object": "chat.completion",
+            "model": "gpt-4o-mini",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "Hello yogurt." },
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-test".into(), "gpt-4o-mini".into());
+    let resp = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect("client call ok");
+    assert_eq!(resp.content, "Hello yogurt.");
+    assert_eq!(resp.model, "gpt-4o-mini");
+}
+
+#[tokio::test]
+async fn minimax_requests_separate_reasoning() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(ReasoningSplit(true))
+        .and(Thinking(Some("disabled")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "MiniMax-M3",
+            "choices": [{
+                "message": { "role": "assistant", "content": "## Final" }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-test".into(), "MiniMax-M3".into());
+    let response = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("summarize")],
+            stream: false,
+        })
+        .await
+        .expect("client call ok");
+
+    assert_eq!(response.content, "## Final");
+}
+
+#[tokio::test]
+async fn minimax_flash_keeps_its_required_thinking() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(ReasoningSplit(true))
+        .and(Thinking(None))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "MiniMax-M3.1-Flash",
+            "choices": [{ "message": { "role": "assistant", "content": "ok" } }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        OpenAiCompatClient::new(server.uri(), "sk-test".into(), "MiniMax-M3.1-Flash".into());
+    let response = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect("client call ok");
+
+    assert_eq!(response.content, "ok");
+}
+
+/// A reasoning model's leaked `<think>…</think>` must be scrubbed even though the request carried `reasoning_split: true`.
+#[tokio::test]
+async fn complete_strips_think_block_when_provider_leaks_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "MiniMax-M3",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "<think>\nlet me think…\n</think>\n\nThey agreed on 25% Monday."
+                }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-test".into(), "MiniMax-M3".into());
+    let resp = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("summarize")],
+            stream: false,
+        })
+        .await
+        .expect("client call ok");
+    assert_eq!(
+        resp.content, "They agreed on 25% Monday.",
+        "think block must be stripped"
+    );
+}
+
+/// Unknown sibling fields such as `reasoning_content` never leak into the response.
+#[tokio::test]
+async fn complete_discards_separate_reasoning_content_field() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "deepseek-reasoner",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Visible answer.",
+                    "reasoning_content": "Internal chain-of-thought that must NOT appear."
+                }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        OpenAiCompatClient::new(server.uri(), "sk-test".into(), "deepseek-reasoner".into());
+    let resp = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect("client call ok");
+    assert_eq!(resp.content, "Visible answer.");
+}
+
+#[tokio::test]
+async fn it_surfaces_4xx_as_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": { "message": "Invalid API key", "type": "auth_error" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-bad".into(), "gpt-4o-mini".into());
+    let err = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect_err("should fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("401") || msg.contains("Invalid API key"),
+        "expected status or upstream message in error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn it_strips_trailing_slash_from_base_url() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "m",
+            "choices": [{
+                "message": { "role": "assistant", "content": "ok" },
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let base_with_slash = format!("{}/", server.uri());
+    let client = OpenAiCompatClient::new(base_with_slash, "sk-test".into(), "m".into());
+    let resp = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect("should hit single-slash endpoint");
+    assert_eq!(resp.content, "ok");
+}
+
+#[tokio::test]
+async fn list_models_returns_ids_from_provider() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(header("authorization", "Bearer sk-test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-4o-mini", "object": "model" },
+                { "id": "gpt-4o", "object": "model" },
+                { "id": "o4-mini", "object": "model" },
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-test".into(), "gpt-4o-mini".into());
+    let models = client.list_models().await.expect("list_models ok");
+    assert_eq!(
+        models,
+        vec![
+            "gpt-4o-mini".to_string(),
+            "gpt-4o".to_string(),
+            "o4-mini".to_string()
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_models_propagates_auth_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": { "message": "Incorrect API key provided", "type": "auth_error" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-bad".into(), "gpt-4o-mini".into());
+    let err = client.list_models().await.expect_err("should fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("401") || msg.contains("Incorrect API key"),
+        "expected status or upstream message in error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn list_models_strips_models_prefix() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [
+                { "id": "models/gemini-2.5-flash", "object": "model" },
+                { "id": "gpt-4o", "object": "model" },
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "sk-test".into(), "gemini-2.5-flash".into());
+    let models = client.list_models().await.expect("list_models ok");
+    assert_eq!(
+        models,
+        vec!["gemini-2.5-flash".to_string(), "gpt-4o".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn list_models_sends_no_auth_header_when_key_is_empty() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .and(NoAuthHeader)
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [{ "id": "llama3.2", "object": "model" }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "".into(), "llama3.2".into());
+    let models = client.list_models().await.expect("list_models ok");
+    assert_eq!(models, vec!["llama3.2".to_string()]);
+}
+
+#[tokio::test]
+async fn errors_never_contain_the_raw_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": { "message": "Incorrect API key provided: sk-secret-123456" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": { "message": "Incorrect API key provided: sk-secret-123456" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(
+        server.uri(),
+        "sk-secret-123456".into(),
+        "gpt-4o-mini".into(),
+    );
+
+    let complete_err = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect_err("should fail");
+    let complete_msg = format!("{complete_err:#}");
+    assert!(
+        !complete_msg.contains("sk-secret-123456"),
+        "raw key leaked from complete(): {complete_msg}"
+    );
+    assert!(
+        complete_msg.contains("[key redacted]"),
+        "expected redaction marker in: {complete_msg}"
+    );
+
+    let list_err = client.list_models().await.expect_err("should fail");
+    let list_msg = format!("{list_err:#}");
+    assert!(
+        !list_msg.contains("sk-secret-123456"),
+        "raw key leaked from list_models(): {list_msg}"
+    );
+    assert!(
+        list_msg.contains("[key redacted]"),
+        "expected redaction marker in: {list_msg}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_connect_is_retried_once() {
+    // A freed port refuses the first connect. macOS holds a connect to a bound socket until it listens, so the port cannot stay reserved.
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let up = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let server = MockServer::builder()
+            .listener(std::net::TcpListener::bind(addr).unwrap())
+            .start()
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "m",
+                "choices": [{ "message": { "role": "assistant", "content": "back" } }]
+            })))
+            .mount(&server)
+            .await;
+        server
+    });
+
+    let client = OpenAiCompatClient::new(format!("http://{addr}"), "k".into(), "m".into());
+    let resp = client
+        .complete(ChatRequest {
+            messages: vec![ChatMessage::user("hi")],
+            stream: false,
+        })
+        .await
+        .expect("the retry reaches the server once it is up");
+    assert_eq!(resp.content, "back");
+    drop(up.await);
+}

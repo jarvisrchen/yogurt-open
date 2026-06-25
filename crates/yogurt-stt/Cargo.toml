@@ -1,0 +1,72 @@
+[package]
+name = "yogurt-stt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pluggable speech-to-text trait + adapters for yogurt."
+
+[features]
+# Gates the whisper.cpp / VAD / hashing toolchain so the default build stays
+# fast (~30 s) and CI skips the ~2 min whisper.cpp CMake build when the local
+# STT path is not needed. `default = []` is deliberate: `cargo check -p
+# yogurt-stt` with no flags must not trigger that build.
+default = []
+local-stt = [
+    "dep:whisper-rs",
+    "dep:sherpa-onnx",
+    "dep:sherpa-onnx-sys",
+    "dep:webrtc-vad",
+    "dep:sha2",
+    # The model registry and download manager live behind `local-stt` too, so
+    # the Deepgram-only build does not pull in reqwest + rustls.
+    "dep:directories",
+    "dep:reqwest",
+    "dep:thiserror",
+]
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Gated behind `local-stt`. `tracing_backend` makes `install_logging_hooks()`
+# route whisper.cpp and ggml's C-side logs into `tracing`. Without it the hooks
+# silence stderr and the output is gone instead of reachable with
+# `RUST_LOG=whisper_rs=debug`.
+whisper-rs = { workspace = true, features = ["metal", "tracing_backend"], optional = true }
+webrtc-vad = { workspace = true, optional = true }
+sherpa-onnx = { workspace = true, optional = true }
+# A direct dependency only so its build script, which downloads the prebuilt, runs before ours, which checks its hash.
+sherpa-onnx-sys = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+directories = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+[build-dependencies]
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tempfile = { workspace = true }
+directories = { workspace = true }
+# In-test HTTP server for the model download flow, with Range semantics so
+# full / resume / bad-hash paths run against real reqwest.
+axum = { workspace = true }
+
+[[example]]
+name = "partial_decode_cost"
+required-features = ["local-stt"]
+
+[[example]]
+name = "initial_prompt_cost"
+required-features = ["local-stt"]

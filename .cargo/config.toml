@@ -1,0 +1,6 @@
+[env]
+# llama.cpp's common library links cpp-httplib against whatever OpenSSL CMake finds, which on a Mac with
+# Homebrew is /opt/homebrew/opt/openssl@N, a path a user's Mac may not have. yogurt never asks llama.cpp
+# for HTTPS, so CMake gets no OpenSSL. llama-cpp-sys-2 forwards CMAKE_* but does not rerun its build when
+# one changes, so after changing this run `cargo clean -p llama-cpp-sys-2`.
+CMAKE_DISABLE_FIND_PACKAGE_OpenSSL = "ON"

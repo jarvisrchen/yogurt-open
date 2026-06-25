@@ -1,0 +1,92 @@
+/**
+ * The "Open System Settings" href must match exactly (casing, query key, scheme) or macOS will not open the Screen Recording pane:
+ * `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`
+ * System Settings lists the responsible app (the terminal that ran `yogurt start`, or the yogurt binary itself), which the server reports as `owner`.
+ * Reloading the tab cannot help: macOS re-reads the TCC grant only on the process's next launch (see `crates/yogurt-audio/src/permission.rs`),
+ * and granting makes macOS quit the asking process, so the server may already be down.
+ * Hence static relaunch instructions (a browser cannot relaunch a process) and a "Check again" button that re-fetches the permission query.
+ */
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { permissionsKey } from "../../lib/api/audio";
+import { Button, buttonClassName } from "../Button";
+import { useScreenRecordingStatus } from "../../hooks/useScreenRecordingStatus";
+
+export function PermissionDenied() {
+  const qc = useQueryClient();
+  const [checking, setChecking] = useState(false);
+  const { owner } = useScreenRecordingStatus();
+
+  const handleCheckAgain = async () => {
+    setChecking(true);
+    try {
+      await qc.refetchQueries({ queryKey: permissionsKey, type: "active" });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col items-center text-center mt-20 px-6 max-w-2xl mx-auto">
+      <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-strsoft text-straw text-heading mb-6">
+        <span aria-hidden>⚠</span>
+        <span className="sr-only">Warning</span>
+      </div>
+
+      <h2 className="heading-state mb-3">
+        yogurt can&apos;t hear the call yet
+      </h2>
+
+      <p className="text-lead text-mut max-w-lg mb-8">
+        macOS requires Screen Recording permission so yogurt can listen to
+        the other side of the call without joining as a bot.
+      </p>
+
+      <ol className="text-left text-body text-ink space-y-2 mb-3 list-decimal list-inside">
+        <li>
+          Open <strong>System Settings → Privacy &amp; Security → Screen
+          Recording</strong>
+        </li>
+        <li>
+          {owner ? (
+            <>
+              Find <strong>{owner}</strong>, the app macOS gives yogurt&apos;s
+              permissions to, and toggle it on
+            </>
+          ) : (
+            <>
+              Find the app that launched yogurt, usually your terminal, and
+              toggle it on
+            </>
+          )}
+        </li>
+        <li>
+          macOS will immediately quit that process. That is expected
+        </li>
+        <li>
+          Relaunch yogurt, then come back here and check again
+        </li>
+      </ol>
+
+      <p className="text-meta text-mut mb-6">
+        this is a macOS requirement
+      </p>
+
+      <div className="flex items-center gap-3">
+        <a
+          href="x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+          className={buttonClassName("primary")}
+        >
+          Open System Settings
+        </a>
+        <Button
+          variant="secondary"
+          onClick={handleCheckAgain}
+          disabled={checking}
+        >
+          {checking ? "Checking…" : "Check again"}
+        </Button>
+      </div>
+    </div>
+  );
+}

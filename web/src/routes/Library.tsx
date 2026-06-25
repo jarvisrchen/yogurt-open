@@ -1,0 +1,305 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Navigate, useLocation, useNavigate, useNavigationType, useParams, useSearchParams } from "react-router";
+import {
+  useActiveRecording,
+  useCreateMeeting,
+  useMeetings,
+  type MeetingsParams,
+} from "../lib/api/meetings";
+import { useLabels } from "../lib/api/labels";
+import { DateGroup } from "../components/library/DateGroup";
+import { Greeting } from "../components/library/Greeting";
+import { Pager } from "../components/library/Pager";
+import { SearchPill } from "../components/library/SearchPill";
+import { SelectionActionBar } from "../components/library/SelectionActionBar";
+import { EMPTY_SELECTION, clickSelect, clearSelection, selectAll } from "../components/library/selection";
+import { pageCount, parsePage, rememberPageSize, resolvePageSize } from "../components/library/pagination";
+import { keepSearch, librarySpot, rememberLibrary } from "../components/library/libraryReturn";
+import { LibrarySkeleton } from "../components/library/LibrarySkeleton";
+import { LibraryAskExperience } from "../components/AskExperience";
+import { EmptyLibrary } from "../components/states/EmptyLibrary";
+import { MicPermissionDenied } from "../components/states/MicPermissionDenied";
+import { PermissionDenied } from "../components/states/PermissionDenied";
+import { useKeyboardShortcut } from "../hooks/useKeyboardShortcut";
+import { useMicrophoneStatus } from "../hooks/useMicrophoneStatus";
+import { useScreenRecordingStatus } from "../hooks/useScreenRecordingStatus";
+import { Slot, slots } from "../slots";
+
+interface LibraryProps {
+  starredOnly?: boolean;
+  archivedOnly?: boolean;
+}
+
+export function Library({ starredOnly = false, archivedOnly = false }: LibraryProps) {
+  const navigate = useNavigate();
+  const { labelId } = useParams<{ labelId: string }>();
+  const labels = useLabels();
+  const createMeeting = useCreateMeeting();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The search lives in the URL with the label and page, so the whole view can be returned to.
+  const query = searchParams.get("q") ?? "";
+  const trimmedQuery = query.trim();
+  const isSearching = trimmedQuery.length > 0;
+  const page = parsePage(searchParams.get("page"));
+  const size = resolvePageSize(searchParams.get("size"));
+
+  // Page 1 is the absence of `page`, so the bare route stays the canonical URL.
+  const goToPage = (next: number, replace = false) =>
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        if (next > 1) p.set("page", String(next));
+        else p.delete("page");
+        return p;
+      },
+      // Only the step back from a page emptied by a delete replaces, and that keeps the scroll.
+      { replace, preventScrollReset: replace },
+    );
+  const onQueryChange = (next: string) =>
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        if (next.trim()) p.set("q", next);
+        else p.delete("q");
+        p.delete("page");
+        return p;
+      },
+      { replace: true, preventScrollReset: true },
+    );
+  const onSizeChange = (next: number) => {
+    rememberPageSize(next);
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev);
+      p.set("size", String(next));
+      p.delete("page");
+      return p;
+    });
+  };
+
+  const [selection, setSelection] = useState(EMPTY_SELECTION);
+
+  // Permission only changes after a restart here, so poll slowly.
+  const { granted, isLoading: permissionLoading } = useScreenRecordingStatus({
+    refetchIntervalMs: 60_000,
+  });
+  const { granted: micGranted, isLoading: micLoading } = useMicrophoneStatus({
+    refetchIntervalMs: 60_000,
+  });
+
+  const params: MeetingsParams = {
+    page,
+    size,
+    labelId: labelId ?? null,
+    starred: starredOnly,
+    archived: archivedOnly,
+    q: trimmedQuery,
+  };
+  const list = useMeetings(params);
+  const isFiltered = isSearching || starredOnly || !!labelId;
+  // The greeting counts the whole library, or the whole archive in the Archive view, so a filtered view asks for it separately.
+  const everything = useMeetings(
+    { page: 1, size: 1, labelId: null, starred: false, archived: archivedOnly, q: "" },
+    isFiltered,
+  );
+  // Undefined while the count loads, so the greeting holds its place instead of saying 0. A failed load says 0, beside the error.
+  const counted = isFiltered ? everything : list;
+  const totalMeetings = counted.data?.total ?? (counted.isLoading ? undefined : 0);
+  // One poll for the whole list, not one per card.
+  const activeId = useActiveRecording().data?.id ?? null;
+
+  // Back, or a Library link back here, lands where the list was left once its rows are in, since they may still be loading.
+  // A first load of the tab (key "default") is neither, and Back with no spot of ours is left to ScrollRestoration.
+  const location = useLocation();
+  const navType = useNavigationType();
+  const here = location.pathname + location.search;
+  const [pending] = useState(() => {
+    const linked = location.state?.libraryReturn === true;
+    const spot = librarySpot();
+    if (spot?.url === here && (linked || (navType === "POP" && location.key !== "default"))) return spot;
+    return linked ? { url: here, y: 0 } : null;
+  });
+  const restored = useRef(pending === null);
+  useLayoutEffect(() => {
+    if (restored.current || !pending) return;
+    // A view changed before the rows came in opens like any other navigation.
+    if (here !== pending.url) restored.current = true;
+    else if (list.data) {
+      restored.current = true;
+      window.scrollTo(0, pending.y);
+    }
+  }, [list.data, pending, here]);
+  useLayoutEffect(() => {
+    const save = () => {
+      if (restored.current) rememberLibrary({ url: here, y: window.scrollY });
+    };
+    save();
+    window.addEventListener("scroll", save, { passive: true });
+    return () => window.removeEventListener("scroll", save);
+  }, [here]);
+
+  const meetings = list.data?.meetings ?? [];
+  const total = list.data?.total ?? 0;
+  const { isLoading, error } = list;
+
+  // Deleting the last row of the last page leaves the URL past the end.
+  const lastPage = pageCount(size, total);
+  useEffect(() => {
+    if (list.data && page > lastPage) goToPage(lastPage, true);
+  }, [list.data, page, lastPage]);
+
+  // Selection covers the page on screen only.
+  const viewKey = `${page}/${size}/${labelId ?? ""}/${starredOnly}/${archivedOnly}/${trimmedQuery}`;
+  useEffect(() => {
+    setSelection(clearSelection());
+  }, [viewKey]);
+
+  const orderedIds = meetings.map((m) => m.id);
+  const selectedMeetings = meetings.filter((m) => selection.selected.has(m.id));
+  // An id can linger in `selection.selected` after its meeting is deleted or
+  // filtered out, which would leave a phantom "0 selected" action bar.
+  const hasSelection = selectedMeetings.length > 0;
+
+  const onToggleSelect = (id: string, shiftKey: boolean) =>
+    setSelection((s) => clickSelect(s, id, orderedIds, shiftKey));
+  const onSelectAll = () => setSelection(selectAll(orderedIds));
+  const onClearSelection = () => setSelection(clearSelection());
+
+  // Some browsers reserve ⌘N for "new window" and never deliver the event.
+  useKeyboardShortcut(
+    { key: "n", metaOrCtrl: true, ignoreWhenTyping: true },
+    async () => {
+      if (createMeeting.isPending) return;
+      try {
+        const m = await createMeeting.mutateAsync(undefined);
+        navigate(`/meeting/${m.id}`, { state: { autoStart: true } });
+      } catch (e) {
+        console.error("create meeting failed", e);
+      }
+    },
+  );
+
+  // ignoreWhenTyping: Escape from an inline rename or the label picker
+  // must not also clear the selection.
+  useKeyboardShortcut({ key: "Escape", ignoreWhenTyping: true }, () => {
+    if (selection.selected.size > 0) onClearSelection();
+  });
+
+  // Wait for the labels list so a fresh load doesn't redirect early.
+  if (labelId && !labels.isLoading && labels.data && !labels.data.some((l) => l.id === labelId)) {
+    return <Navigate to={(archivedOnly ? "/archive" : "/") + keepSearch(location.search)} replace />;
+  }
+
+  // Wait for the probe to avoid a one-frame flash of PermissionDenied.
+  if (!permissionLoading && !granted) {
+    return (
+      <main className="flex-1">
+        <PermissionDenied />
+      </main>
+    );
+  }
+  if (!micLoading && !micGranted) {
+    return (
+      <main className="flex-1">
+        <MicPermissionDenied />
+      </main>
+    );
+  }
+
+  return (
+    <>
+      <main className="flex-1 px-12 pt-10 pb-28 max-w-215">
+        <div className="flex items-start justify-between mb-8">
+          <Greeting count={totalMeetings} archived={archivedOnly} />
+          <div className="flex items-center gap-2">
+            <Slot of={slots.libraryActions.header} archived={archivedOnly} labelId={labelId} />
+            <SearchPill value={query} onChange={onQueryChange} />
+          </div>
+        </div>
+
+        {isLoading && <LibrarySkeleton rows={Math.min(size, 8)} />}
+        {error && (
+          <div className="inline-block text-ui text-ink bg-strsoft border border-straw/40 rounded-button px-3 py-2">
+            Couldn't load meetings: {error.message}
+          </div>
+        )}
+        {!isLoading && !error && meetings.length === 0 && (
+          isSearching ? (
+            <NoMatches />
+          ) : labelId ? (
+            <NoLabelMeetings archived={archivedOnly} />
+          ) : starredOnly ? (
+            <NoStarred />
+          ) : archivedOnly ? (
+            <NoArchived />
+          ) : (
+            <EmptyLibrary />
+          )
+        )}
+        {!isLoading && !error && meetings.length > 0 && (
+          <div aria-busy={list.isPlaceholderData} className={list.isPlaceholderData ? "opacity-60 transition-opacity" : undefined}>
+            <DateGroup
+              meetings={meetings}
+              activeId={activeId}
+              selectionActive={hasSelection}
+              selectedIds={selection.selected}
+              onToggleSelect={onToggleSelect}
+              archived={archivedOnly}
+            />
+            <Pager
+              page={page}
+              size={size}
+              total={total}
+              onPage={goToPage}
+              onSize={onSizeChange}
+            />
+          </div>
+        )}
+      </main>
+      {/* Both anchor bottom-center, so the selection bar takes the slot while it shows. */}
+      {hasSelection ? (
+        <SelectionActionBar
+          meetings={selectedMeetings}
+          onSelectAll={onSelectAll}
+          onClear={onClearSelection}
+          archived={archivedOnly}
+          activeId={activeId}
+        />
+      ) : (
+        <LibraryAskExperience />
+      )}
+    </>
+  );
+}
+
+function NoMatches() {
+  return (
+    <div className="text-ui text-mut">No matches</div>
+  );
+}
+
+function NoLabelMeetings({ archived }: { archived: boolean }) {
+  return (
+    <div className="text-ui text-mut">
+      {archived ? "No archived meetings with this label." : "No meetings with this label yet."}
+    </div>
+  );
+}
+
+function NoStarred() {
+  return (
+    <div className="text-ui text-mut">
+      No starred meetings yet — hover a meeting and click the star.
+    </div>
+  );
+}
+
+function NoArchived() {
+  return (
+    <div className="text-ui text-mut">
+      <p className="text-ink font-semibold">No archived meetings</p>
+      <p className="mt-1">
+        Archive a meeting from its menu, or select several and archive them together.
+      </p>
+    </div>
+  );
+}

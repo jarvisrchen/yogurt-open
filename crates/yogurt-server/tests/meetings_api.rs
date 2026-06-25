@@ -1,0 +1,914 @@
+use std::time::Duration;
+
+use yogurt_server::{run_with_config, Mode, RunConfig};
+
+async fn spawn_server() -> (
+    std::net::SocketAddr,
+    String,
+    tokio::task::JoinHandle<()>,
+    std::path::PathBuf,
+    tempfile::TempDir,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("yogurt-test.db");
+    let token_path = tmp.path().join("session-token");
+    let notes_dir = tmp.path().join("notes");
+
+    let token = yogurt_server::session::load_or_create(&token_path)
+        .expect("seed session token")
+        .as_str()
+        .to_string();
+
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral");
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    std::env::set_var("YOGURT_MEMORY_KEYSTORE", "1");
+    let cfg = RunConfig {
+        addr,
+        mode: Mode::Release,
+        db_path: Some(db_path),
+        session_token_path: Some(token_path),
+        notes_dir: Some(notes_dir.clone()),
+        app_db_path: Some(tmp.path().join("yogurt-app.sqlite")),
+        keys_path: None,
+        voice_shortcut: None,
+    };
+    let handle = tokio::spawn(async move {
+        let _ = run_with_config(cfg).await;
+    });
+    for _ in 0..400 {
+        if reqwest::get(format!("http://{addr}/api/health"))
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+        {
+            return (addr, token, handle, notes_dir, tmp);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("server did not become reachable within 8 seconds");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_creates_and_lists_meetings() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let create_resp = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Standup" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 201);
+    let created: serde_json::Value = create_resp.json().await.unwrap();
+    let id = created["id"].as_str().expect("id").to_string();
+    assert_eq!(created["title"].as_str().unwrap(), "Standup");
+    assert!(
+        created["created_at"].as_str().is_some(),
+        "created_at must be a serialized ISO 8601 string"
+    );
+
+    let list_resp = client
+        .get(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), 200);
+    let page: serde_json::Value = list_resp.json().await.unwrap();
+    assert_eq!(page["total"], 1);
+    let xs = page["meetings"].as_array().unwrap();
+    assert_eq!(xs.len(), 1);
+    assert!(
+        xs[0].get("transcript_json").is_none() && xs[0].get("notes_md").is_none(),
+        "list rows are summaries: {}",
+        xs[0]
+    );
+    assert_eq!(xs[0]["has_enriched"], false);
+    assert_eq!(xs[0]["id"].as_str().unwrap(), id);
+    assert_eq!(xs[0]["title"].as_str().unwrap(), "Standup");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_creates_a_fixture_meeting_with_transcript_and_ended() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let create_resp = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "title": "fixture",
+            "transcript_json": [
+                {"ts_ms": 0, "channel": "me", "text": "hello there"},
+                {"ts_ms": 4000, "channel": "them", "text": "hi yourself"},
+            ],
+            "ended": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 201);
+    let created: serde_json::Value = create_resp.json().await.unwrap();
+
+    assert!(
+        created["ended_at"].is_number(),
+        "expected ended_at to be stamped: {created}"
+    );
+    assert!(
+        created["stt_engine"].is_null(),
+        "a fixture meeting was never recorded, so no engine should be stamped: {created}"
+    );
+    let segments: Vec<serde_json::Value> =
+        serde_json::from_str(created["transcript_json"].as_str().unwrap()).unwrap();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0]["text"], "hello there");
+    assert_eq!(segments[1]["channel"], "them");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_allows_ended_true_with_no_transcript() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let create_resp = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "empty finished meeting", "ended": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 201);
+    let created: serde_json::Value = create_resp.json().await.unwrap();
+    assert!(created["ended_at"].is_number());
+    assert_eq!(created["transcript_json"], "[]");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_rejects_malformed_transcript_json_naming_the_bad_field() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let create_resp = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "title": "bad fixture",
+            "transcript_json": [{"channel": "me", "text": "hi"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), 400);
+    let body: serde_json::Value = create_resp.json().await.unwrap();
+    let msg = body["error"].as_str().expect("error field is a string");
+    assert!(
+        msg.contains("ts_ms"),
+        "expected the error to name the missing field: {msg}"
+    );
+
+    let list_resp: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        list_resp["meetings"].as_array().unwrap().is_empty(),
+        "expected no meeting rows: {list_resp:?}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_patches_title_and_writes_markdown_file() {
+    let (addr, token, handle, notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Initial" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let patch_resp = client
+        .patch(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "title": "Renamed",
+            "notes_md": "- bullet 1\n",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(patch_resp.status(), 200);
+    let body: serde_json::Value = patch_resp.json().await.unwrap();
+    assert_eq!(body["title"].as_str().unwrap(), "Renamed");
+    assert_eq!(body["notes_md"].as_str().unwrap(), "- bullet 1\n");
+
+    // The exporter slugifies the title into the filename, so search for a file containing "renamed".
+    let entries: Vec<_> = std::fs::read_dir(&notes_dir)
+        .expect("notes_dir exists")
+        .filter_map(|e| e.ok())
+        .collect();
+    let renamed_files: Vec<_> = entries
+        .iter()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("renamed")
+        })
+        .collect();
+    assert!(
+        !renamed_files.is_empty(),
+        "expected a markdown file containing 'renamed' in its name under {notes_dir:?}; \
+         entries: {:?}",
+        entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+    let content = std::fs::read_to_string(renamed_files[0].path()).unwrap();
+    assert!(content.contains("Renamed"), "front-matter has new title");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_patches_stt_engine_and_persists() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Standup" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        created["stt_engine"].is_null(),
+        "fresh meeting has no stamp yet"
+    );
+
+    let patch_resp = client
+        .patch(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "stt_engine": "local \u{b7} small.en" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(patch_resp.status(), 200);
+    let body: serde_json::Value = patch_resp.json().await.unwrap();
+    assert_eq!(
+        body["stt_engine"].as_str().unwrap(),
+        "local \u{b7} small.en"
+    );
+
+    let get_resp: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        get_resp["stt_engine"].as_str().unwrap(),
+        "local \u{b7} small.en"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_deletes_and_returns_404() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let del_resp = client
+        .delete(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), 204);
+
+    let get_resp = client
+        .get(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), 404);
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_deletes_the_markdown_only_when_asked() {
+    let (addr, token, handle, notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let mut paths = Vec::new();
+    let mut ids = Vec::new();
+    for title in ["Keep the file", "Nuke the file"] {
+        let created: serde_json::Value = client
+            .post(format!("http://{addr}/api/meetings"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "title": title }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        client
+            .patch(format!("http://{addr}/api/meetings/{id}"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "notes": "- a note" }))
+            .send()
+            .await
+            .unwrap();
+        let path = std::fs::read_dir(&notes_dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| !paths.contains(p))
+            .expect("exporter wrote a markdown file");
+        paths.push(path);
+        ids.push(id);
+    }
+
+    let resp = client
+        .delete(format!("http://{addr}/api/meetings/{}", ids[0]))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert!(paths[0].exists(), "default delete must not unlink the .md");
+
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/meetings/{}?delete_file=true",
+            ids[1]
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert!(!paths[1].exists(), "delete_file=true must unlink the .md");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_fts_searches_meetings() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let a: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Roadmap planning" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let _b: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Hiring loop" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    client
+        .patch(format!(
+            "http://{addr}/api/meetings/{}",
+            a["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "notes_md": "- discuss the palette refresh\n- pick Friday"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let hits: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings/search?q=palette"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(hits["total"], 1);
+    assert_eq!(hits["meetings"][0]["id"], a["id"]);
+
+    let none: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings/search?q=zzzzz"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(none["total"], 0);
+    assert!(none["meetings"].as_array().unwrap().is_empty());
+
+    let all: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings/search?q="))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all["total"], 2, "empty q must return the full list");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_returns_markdown_with_front_matter() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Markdown export test" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Give the file a body so the `body_md` branch of the exporter view is exercised.
+    client
+        .patch(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "notes_md": "- one\n- two" }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let resp = client
+        .get(format!("http://{addr}/api/meetings/{id}/markdown"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()["content-type"],
+        "text/markdown; charset=utf-8"
+    );
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.starts_with("---\n"),
+        "must start with YAML front-matter"
+    );
+    assert!(
+        body.contains("title: \"Markdown export test\""),
+        "front-matter must carry the title; got: {body}"
+    );
+    assert!(body.contains("- one"), "body must include patched notes");
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_returns_404_for_markdown_of_missing_meeting() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/api/meetings/nope/markdown"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    handle.abort();
+}
+
+// A real reveal would activate Finder on macOS hosts, so only the contract is asserted: missing meeting 404, valid meeting 204.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn it_reveals_an_existing_meeting() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "Reveal test" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/meetings/{}/reveal",
+            created["id"].as_str().unwrap()
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_stamps_ended_at_on_stop_and_second_stop_is_a_noop() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let stop_resp = client
+        .post(format!("http://{addr}/api/meetings/{id}/stop"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stop_resp.status(), 200);
+
+    let after_first: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ended_at_first = after_first["ended_at"]
+        .as_i64()
+        .expect("ended_at must be set after the first stop");
+
+    // A small delay so a buggy re-stamp would show as a changed timestamp.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let stop_resp2 = client
+        .post(format!("http://{addr}/api/meetings/{id}/stop"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        stop_resp2.status(),
+        200,
+        "second stop must still be a 200 no-op"
+    );
+
+    let after_second: serde_json::Value = client
+        .get(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        after_second["ended_at"].as_i64(),
+        Some(ended_at_first),
+        "second stop must not change ended_at — first stop wins"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn it_returns_404_for_missing_id() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://{addr}/api/meetings/nonexistent-id"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    handle.abort();
+}
+
+/// Data-loss guard: a PATCH with an empty `enriched_md` must not blank a stored non-empty document (a stale post-view mount flushed `""` on unmount).
+/// Other fields in the same PATCH still apply.
+#[tokio::test]
+async fn patch_with_empty_enriched_md_does_not_blank_stored_content() {
+    let (addr, token, task, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "guard test" }))
+        .send()
+        .await
+        .expect("create")
+        .json()
+        .await
+        .expect("create json");
+    let id = created["id"].as_str().expect("id").to_string();
+
+    let patch = |body: serde_json::Value| {
+        let client = client.clone();
+        let url = format!("http://{addr}/api/meetings/{id}");
+        let token = token.clone();
+        async move {
+            client
+                .patch(url)
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .expect("patch")
+                .json::<serde_json::Value>()
+                .await
+                .expect("patch json")
+        }
+    };
+
+    let after_set = patch(serde_json::json!({ "enriched_md": "## Real\n\n- content" })).await;
+    assert_eq!(after_set["enriched_md"], "## Real\n\n- content");
+
+    let after_blank = patch(serde_json::json!({ "enriched_md": "", "notes_md": "- kept" })).await;
+    assert_eq!(
+        after_blank["enriched_md"], "## Real\n\n- content",
+        "blank enriched_md must be dropped, not persisted"
+    );
+    assert_eq!(
+        after_blank["notes_md"], "- kept",
+        "sibling fields still apply"
+    );
+
+    task.abort();
+}
+
+/// `GET /api/meetings/active` with nothing recording returns `200 null`, not 404, since the frontend polls it every 5s.
+#[tokio::test(flavor = "multi_thread")]
+async fn active_recording_returns_null_when_nothing_is_recording() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://{addr}/api/meetings/active"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.is_null());
+
+    handle.abort();
+}
+
+/// Route-order guard: the literal `/api/meetings/active` must not shadow `/api/meetings/:id`, though the two are registered in different routers.
+#[tokio::test(flavor = "multi_thread")]
+async fn active_recording_route_does_not_capture_real_meeting_ids() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/meetings"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "title": "route order guard" }))
+        .send()
+        .await
+        .expect("create")
+        .json()
+        .await
+        .expect("create json");
+    let id = created["id"].as_str().expect("id").to_string();
+
+    let get_resp = client
+        .get(format!("http://{addr}/api/meetings/{id}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), 200);
+    let got: serde_json::Value = get_resp.json().await.unwrap();
+    assert_eq!(got["id"].as_str().unwrap(), id);
+    assert_eq!(got["title"].as_str().unwrap(), "route order guard");
+
+    handle.abort();
+}
+
+/// `GET /api/meetings/active` must serialize the truthful `stt` engine and mic device once `Registry::start` has stamped them, since the live header and mic picker trust them over Settings.
+/// `Registry::start` needs real audio hardware, so the test seeds a registry meeting in-process and sets `stt_engine` directly.
+#[tokio::test]
+async fn active_recording_serializes_stt_engine_and_mic_device_once_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.keep();
+    let storage = std::sync::Arc::new(
+        yogurt_server::storage::Storage::init_at(&path.join("db.sqlite")).unwrap(),
+    );
+    let session = std::sync::Arc::new(
+        yogurt_server::session::load_or_create(&path.join("session-token")).unwrap(),
+    );
+    let token = session.as_str().to_string();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = yogurt_server::state::AppState::in_memory(
+        Mode::Release,
+        storage,
+        session,
+        addr.port(),
+        path.join("notes"),
+    )
+    .unwrap();
+
+    // A "recording" meeting (task is Some) with the engine stamped, as `Registry::start` does after `select_stt`.
+    let m = state.meetings.create().await;
+    let never_finishes = tokio::spawn(async { std::future::pending::<()>().await });
+    *m.task.lock().await = Some(never_finishes);
+    *m.stt_engine.lock().await = Some("cloud");
+    *m.mic_device.lock().await = "BlackHole 2ch".into();
+
+    let app = yogurt_server::__test_router(state.clone());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let body: serde_json::Value = reqwest::Client::new()
+        .get(format!("http://{addr}/api/meetings/active"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["id"], m.id.to_string());
+    assert_eq!(body["stt"], "cloud");
+    assert_eq!(body["mic_device"], "BlackHole 2ch");
+}
+
+async fn get_json(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    token: &str,
+    path: &str,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let r = client
+        .get(format!("http://{addr}{path}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    // Axum's own query rejection is plain text, so a non-JSON body reads as null.
+    (r.status(), r.json().await.unwrap_or_default())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_and_search_page_with_totals_and_sql_filters() {
+    let (addr, token, handle, _notes_dir, _tmp) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let mut ids = Vec::new();
+    for i in 0..7 {
+        let m: serde_json::Value = client
+            .post(format!("http://{addr}/api/meetings"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({
+                "title": format!("Budget {i}"),
+                "started_at_unix_ms": 1_000 * (i + 1),
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(m["id"].as_str().unwrap().to_string());
+    }
+    for id in [&ids[1], &ids[5]] {
+        client
+            .patch(format!("http://{addr}/api/meetings/{id}"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "starred": true }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+
+    let (status, page) = get_json(&client, addr, &token, "/api/meetings?limit=3&offset=3").await;
+    assert_eq!(status, 200);
+    assert_eq!(page["total"], 7, "total counts every match before paging");
+    let got: Vec<&str> = page["meetings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(got, [&ids[3], &ids[2], &ids[1]]);
+
+    let (_, page) = get_json(&client, addr, &token, "/api/meetings").await;
+    assert_eq!(
+        page["meetings"].as_array().unwrap().len(),
+        7,
+        "default limit is 25"
+    );
+
+    let (_, page) = get_json(&client, addr, &token, "/api/meetings?starred=true&limit=1").await;
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["meetings"][0]["id"], ids[5].as_str());
+
+    let (_, page) = get_json(
+        &client,
+        addr,
+        &token,
+        "/api/meetings/search?q=budget&starred=true&limit=1&offset=1",
+    )
+    .await;
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["meetings"][0]["id"], ids[1].as_str());
+
+    let (_, page) = get_json(&client, addr, &token, "/api/meetings?label_id=nope").await;
+    assert_eq!(page["total"], 0);
+
+    for bad in ["limit=0", "limit=101", "limit=-1", "offset=-1"] {
+        let (status, _) = get_json(&client, addr, &token, &format!("/api/meetings?{bad}")).await;
+        assert!(
+            status.is_client_error(),
+            "{bad} should be rejected: {status}"
+        );
+    }
+    let (status, _) = get_json(&client, addr, &token, "/api/meetings/search?q=x&limit=101").await;
+    assert_eq!(status, 400);
+
+    handle.abort();
+}

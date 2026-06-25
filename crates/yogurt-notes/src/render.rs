@@ -1,0 +1,204 @@
+//! `MergedDoc` -> wire-format markdown with `data-ai-grey` / `data-transcript-link` marker spans.
+//! Every `AiGrey` block, headings included, is wrapped in `<span data-ai-grey data-ts="N">` so the editor paints it grey.
+//! Non-heading blocks also get a trailing `<span data-transcript-link>` deep-link.
+//! Headings get none, since they are inferred topic labels, not transcript facts.
+
+use crate::ast::{strip_markers, Block};
+use crate::{MergedDoc, Source};
+
+pub fn to_markdown(doc: &MergedDoc) -> String {
+    let mut out = String::new();
+    let mut in_list = false;
+    for mb in &doc.blocks {
+        // Items have no trailing blank line so siblings stay one list.
+        // The list must close before any other block, or a following paragraph becomes a lazy continuation.
+        let is_item = matches!(mb.block, Block::ListItem { .. });
+        if in_list && !is_item {
+            out.push('\n');
+        }
+        in_list = is_item;
+        let rendered = match &mb.block {
+            Block::Heading { level, text } => {
+                format!("{} {}\n\n", "#".repeat(*level as usize), text)
+            }
+            Block::Paragraph { md } => format!("{md}\n\n"),
+            Block::ListItem { md, depth } => {
+                format!("{}- {md}\n", "  ".repeat(*depth as usize))
+            }
+            Block::CodeBlock { lang, body } => {
+                format!("```{}\n{body}\n```\n\n", lang.as_deref().unwrap_or(""))
+            }
+            Block::BlockQuote { md } => format!("> {md}\n\n"),
+            Block::Hr => "---\n\n".into(),
+        };
+        let with_marks = match (&mb.source, &mb.block) {
+            (Source::User, _) => rendered,
+            (Source::AiGrey { transcript_ts_sec }, Block::Heading { level, text }) => {
+                format!(
+                    "{} <span data-ai-grey data-ts=\"{transcript_ts_sec}\">{}</span>\n\n",
+                    "#".repeat(*level as usize),
+                    html_escape::encode_safe(&strip_markers(text))
+                )
+            }
+            (Source::AiGrey { transcript_ts_sec }, _) => {
+                wrap_ai(&rendered, *transcript_ts_sec, &mb.user_runs)
+            }
+        };
+        out.push_str(&with_marks);
+    }
+    out
+}
+
+fn wrap_ai(rendered: &str, ts: u64, user_runs: &[(usize, usize)]) -> String {
+    let mins = ts / 60;
+    let secs = ts % 60;
+    let stamp = format!("{:02}:{:02}", mins, secs);
+    let trim = rendered.trim_end_matches('\n');
+    let suffix_node = format!(r#"<span data-transcript-link data-ts="{ts}">↳ {stamp}</span>"#);
+    // Keep a nested item's indent outside the span.
+    let indent_len = trim.len() - trim.trim_start().len();
+    let (indent, body) = trim.split_at(indent_len);
+    // Weaker models echo the prompt's span markers literally. Strip them before escaping,
+    // or they come out HTML-escaped and double-wrapped. A hallucinated `<script>` survives
+    // stripping and is escaped below. Stripping after the list marker is split off strips
+    // exactly the text `diff` stripped, so `user_runs` offsets line up.
+    if let Some(inner) = body.strip_prefix("- ") {
+        let inner = strip_markers(inner);
+        // `inner` is untrusted LLM output, so escape it. The wrapper span is ours and stays raw.
+        if user_runs.is_empty() {
+            let safe_inner = html_escape::encode_safe(&inner);
+            format!(
+                "{indent}- <span data-ai-grey data-ts=\"{ts}\">{safe_inner} {suffix_node}</span>\n"
+            )
+        } else {
+            format!("{indent}- {} {suffix_node}\n", paint(&inner, ts, user_runs))
+        }
+    } else {
+        let trim = strip_markers(trim);
+        if user_runs.is_empty() {
+            let safe_trim = html_escape::encode_safe(&trim);
+            format!("<span data-ai-grey data-ts=\"{ts}\">{safe_trim} {suffix_node}</span>\n\n")
+        } else {
+            format!("{} {suffix_node}\n\n", paint(&trim, ts, user_runs))
+        }
+    }
+}
+
+/// Escapes `inner` and wraps everything outside `user_runs` in ai-grey spans, leaving the user's words bare.
+/// Runs are byte offsets from `diff` on the same marker-stripped text.
+/// Runs out of range or off a char boundary are skipped.
+fn paint(inner: &str, ts: u64, user_runs: &[(usize, usize)]) -> String {
+    let grey = |s: &str| {
+        if s.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<span data-ai-grey data-ts=\"{ts}\">{}</span>",
+                html_escape::encode_safe(s)
+            )
+        }
+    };
+    let mut out = String::new();
+    let mut pos = 0;
+    for &(a, b) in user_runs {
+        if a < pos || b <= a || b > inner.len() {
+            continue;
+        }
+        if !inner.is_char_boundary(a) || !inner.is_char_boundary(b) {
+            continue;
+        }
+        out.push_str(&grey(&inner[pos..a]));
+        out.push_str(&html_escape::encode_safe(&inner[a..b]));
+        pos = b;
+    }
+    out.push_str(&grey(&inner[pos..]));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Block;
+    use crate::MergedBlock;
+
+    fn ai(block: Block) -> MergedBlock {
+        MergedBlock {
+            block,
+            source: Source::AiGrey {
+                transcript_ts_sec: 24,
+            },
+            user_runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn woven_user_words_render_bare_between_grey_spans() {
+        let mut mb = ai(Block::ListItem {
+            md: "Rollout: 25% on Monday the 5th, then 50% the following week".into(),
+            depth: 1,
+        });
+        mb.user_runs = vec![(9, 22)];
+        let md = to_markdown(&MergedDoc { blocks: vec![mb] });
+        assert_eq!(
+            md,
+            "  - <span data-ai-grey data-ts=\"24\">Rollout: </span>25% on Monday\
+             <span data-ai-grey data-ts=\"24\"> the 5th, then 50% the following week</span> \
+             <span data-transcript-link data-ts=\"24\">↳ 00:24</span>\n"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_after_a_list_does_not_lazy_continue_the_bullet() {
+        let doc = MergedDoc {
+            blocks: vec![
+                ai(Block::ListItem {
+                    md: "from the transcript".into(),
+                    depth: 0,
+                }),
+                MergedBlock {
+                    block: Block::Paragraph {
+                        md: "my own line".into(),
+                    },
+                    source: Source::User,
+                    user_runs: Vec::new(),
+                },
+            ],
+        };
+        let md = to_markdown(&doc);
+        assert!(
+            md.contains("</span>\n\nmy own line"),
+            "blank line must close the list, got:\n{md}"
+        );
+    }
+
+    #[test]
+    fn ai_headings_are_marked_grey_without_a_deep_link() {
+        let doc = MergedDoc {
+            blocks: vec![
+                ai(Block::Heading {
+                    level: 1,
+                    text: "Team <b>updates</b>".into(),
+                }),
+                ai(Block::Heading {
+                    level: 3,
+                    text: "Launch".into(),
+                }),
+                MergedBlock {
+                    block: Block::Heading {
+                        level: 2,
+                        text: "Mine".into(),
+                    },
+                    source: Source::User,
+                    user_runs: Vec::new(),
+                },
+            ],
+        };
+        let md = to_markdown(&doc);
+        assert_eq!(
+            md,
+            "# <span data-ai-grey data-ts=\"24\">Team &lt;b&gt;updates&lt;&#x2F;b&gt;</span>\n\n\
+             ### <span data-ai-grey data-ts=\"24\">Launch</span>\n\n\
+             ## Mine\n\n"
+        );
+    }
+}

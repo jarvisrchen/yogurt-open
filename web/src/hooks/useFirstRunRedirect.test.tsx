@@ -1,0 +1,190 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, waitFor } from "@testing-library/react";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router";
+import { useFirstRunRedirect } from "./useFirstRunRedirect";
+
+// `vi.mock` factories run before imports, so per-test state lives in `vi.hoisted` slots.
+
+const state = vi.hoisted(() => ({
+  settings: undefined as unknown,
+  screenRec: undefined as unknown,
+  mic: undefined as unknown,
+}));
+
+vi.mock("../lib/api/settings", () => ({
+  useSettings: () => state.settings,
+}));
+
+vi.mock("./useScreenRecordingStatus", () => ({
+  useScreenRecordingStatus: () => state.screenRec,
+}));
+
+vi.mock("./useMicrophoneStatus", () => ({
+  useMicrophoneStatus: () => state.mic,
+}));
+
+function Probe() {
+  const { pathname } = useLocation();
+  return <div data-testid="pathname">{pathname}</div>;
+}
+
+function Shell() {
+  useFirstRunRedirect();
+  return <Probe />;
+}
+
+function renderAt(initialPath: string) {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <Routes>
+        <Route path="/" element={<Shell />} />
+        <Route path="/welcome" element={<Shell />} />
+        <Route path="/settings" element={<Shell />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+interface FakeSettings {
+  isLoading: boolean;
+  data?: {
+    general: { first_run_completed: boolean };
+    providers: Array<{ is_active: boolean }>;
+  };
+}
+
+function settingsLoaded(opts: {
+  firstRunCompleted: boolean;
+  hasActiveProvider: boolean;
+}): FakeSettings {
+  return {
+    isLoading: false,
+    data: {
+      general: { first_run_completed: opts.firstRunCompleted },
+      providers: opts.hasActiveProvider
+        ? [{ is_active: true }]
+        : [{ is_active: false }],
+    },
+  };
+}
+
+function screenRecLoaded(granted: boolean) {
+  return { granted, status: granted ? "granted" : "denied", isLoading: false, error: null };
+}
+
+function micLoaded(granted: boolean) {
+  return { granted, status: granted ? "granted" : "denied", isLoading: false, error: null };
+}
+
+describe("useFirstRunRedirect", () => {
+  beforeEach(() => {
+    state.settings = undefined;
+    state.screenRec = undefined;
+    state.mic = undefined;
+  });
+
+  it("redirects to /welcome when first_run_completed is false", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: false,
+      hasActiveProvider: true,
+    });
+    state.screenRec = screenRecLoaded(true);
+    state.mic = micLoaded(true);
+
+    const { getByTestId } = renderAt("/");
+    await waitFor(() => {
+      expect(getByTestId("pathname").textContent).toBe("/welcome");
+    });
+  });
+
+  it("redirects to /welcome when Screen Recording is denied", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: true,
+      hasActiveProvider: true,
+    });
+    state.screenRec = screenRecLoaded(false);
+    state.mic = micLoaded(true);
+
+    const { getByTestId } = renderAt("/");
+    await waitFor(() => {
+      expect(getByTestId("pathname").textContent).toBe("/welcome");
+    });
+  });
+
+  it("redirects to /welcome when Microphone is denied", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: true,
+      hasActiveProvider: true,
+    });
+    state.screenRec = screenRecLoaded(true);
+    state.mic = micLoaded(false);
+
+    const { getByTestId } = renderAt("/");
+    await waitFor(() => {
+      expect(getByTestId("pathname").textContent).toBe("/welcome");
+    });
+  });
+
+  it("redirects to /welcome when no active provider", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: true,
+      hasActiveProvider: false,
+    });
+    state.screenRec = screenRecLoaded(true);
+    state.mic = micLoaded(true);
+
+    const { getByTestId } = renderAt("/");
+    await waitFor(() => {
+      expect(getByTestId("pathname").textContent).toBe("/welcome");
+    });
+  });
+
+  it("stays on / when fully set up", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: true,
+      hasActiveProvider: true,
+    });
+    state.screenRec = screenRecLoaded(true);
+    state.mic = micLoaded(true);
+
+    const { getByTestId } = renderAt("/");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getByTestId("pathname").textContent).toBe("/");
+  });
+
+  it("does not redirect on routes other than /", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: false,
+      hasActiveProvider: false,
+    });
+    state.screenRec = screenRecLoaded(false);
+    state.mic = micLoaded(false);
+
+    const { getByTestId } = renderAt("/settings");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getByTestId("pathname").textContent).toBe("/settings");
+  });
+
+  it("does nothing while settings are still loading (no flicker)", async () => {
+    state.settings = { isLoading: true };
+    state.screenRec = screenRecLoaded(false);
+    state.mic = micLoaded(false);
+
+    const { getByTestId } = renderAt("/");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getByTestId("pathname").textContent).toBe("/");
+  });
+
+  it("does nothing while microphone status is still loading (no flicker)", async () => {
+    state.settings = settingsLoaded({
+      firstRunCompleted: false,
+      hasActiveProvider: false,
+    });
+    state.screenRec = screenRecLoaded(false);
+    state.mic = { isLoading: true, granted: false, status: undefined, error: null };
+
+    const { getByTestId } = renderAt("/");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getByTestId("pathname").textContent).toBe("/");
+  });
+});

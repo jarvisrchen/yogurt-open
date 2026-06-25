@@ -1,0 +1,618 @@
+@import "tailwindcss";
+
+/* Tokens become Tailwind utilities via `@theme`. The dark variant re-points them under `:root[data-theme="dark"]`. */
+
+@theme {
+  /* html sets a 15px root, so the default 0.25rem step would be 3.75px. */
+  --spacing: 4px;
+  --color-paper:   #FBF7EF;  /* app background, hero surfaces             */
+  --color-card:    #FFFFFF;  /* cards, surfaces over paper                */
+  --color-ink:     #211D18;  /* user notes, headings, primary text        */
+  --color-grey:    #A89F90;  /* secondary captions, transcript "Them"     */
+  --color-ai:      #7A7264;  /* AI-added text (4.5:1 on paper)            */
+  --color-line:    #EBE3D5;  /* borders, dividers                         */
+  --color-blue:    #5B4FC7;  /* primary blueberry: buttons, transcript   */
+  --color-blsoft:  #ECE9FB;  /* soft blueberry: active-nav, pill bg      */
+  --color-straw:   #E07A66;  /* recording indicator, error accent         */
+  --color-strsoft: #FBE6E0;  /* soft strawberry: error/warning bg        */
+  --color-matcha:  #5E9E73;  /* local-only / privacy / success            */
+  --color-mtsoft:  #E7F0E8;  /* soft matcha: local-mode badges           */
+  --color-mut:     #8A8174;  /* muted text on cards                       */
+  --color-raised:  #FFFFFF;  /* selected segment, lighter than its track  */
+  /* Label chip palette (LabelChip.tsx): the three non-brand label colors. */
+  --color-lilac:     #8A5BB8;
+  --color-lilacsoft: #F3E8FB;
+  --color-honey:     #A67C1B;
+  --color-honeysoft: #FBF0D6;
+  --color-honeyink:  #7A5A0F;  /* honey text that reaches 4.5:1 on white and on honeysoft */
+  --color-slate:     #4E5D6B;
+  --color-slatesoft: #E8ECF0;
+
+  --font-sans:  "Manrope", "Inter", "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:  "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* The type scale. Use `text-<role>`, never `text-[Npx]`: cloud/src/index.css re-points these for the phone and the webapp's desktop. */
+  /* Two roles on one element resolve by name, not size (`ui` beats `body`), so a caller overriding a component's role needs `!`. */
+  --text-caption: 11px;
+  --text-meta:    12px;
+  --text-ui:      13px;
+  --text-body:    14px;
+  --text-lead:    15px;
+  --text-title:   18px;
+  --text-heading: 22px;
+  --text-display: 26px;
+
+  --radius-chip:   8px;    /* small chip                                    */
+  --radius-button: 12px;   /* buttons, inputs, nav rows                     */
+  --radius-card:   16px;   /* cards                                         */
+  --radius-panel:  24px;   /* floating panels: chat window, dialogs, dock   */
+  --radius-pill:   999px;  /* pills, recording badge                        */
+
+  /* Tailwind copies a shadow's value into its utility class, so dark mode re-points the colors below, not these. */
+  --shadow-card:   0 16px 32px -4px var(--shadow-card-color);
+  --shadow-pop:    0 12px 16px -4px var(--shadow-pop-color);
+  --shadow-window: 0 24px 48px -8px var(--shadow-window-color);
+  --shadow-button-blue: 0 8px 16px -6px rgba(91, 79, 199, 0.35);
+
+  --ease-pop:   cubic-bezier(0, 0, 0.2, 1);
+  --ease-slide: cubic-bezier(0.2, 0.7, 0.2, 1);      /* slideInRight 340ms */
+
+  --animate-recpulse:  recpulse 1.4s ease-in-out infinite;
+  --animate-blink:     blink    1.0s step-end infinite;
+  --animate-shimmer:   shimmer  1.25s linear infinite;
+  --animate-wave:      wave     1.0s ease-in-out infinite;
+  --animate-float:     float    3.5s ease-in-out infinite;
+  --animate-pop-up:    pop-up   260ms cubic-bezier(0, 0, 0.2, 1);
+  --animate-slide-in-right: slide-in-right 340ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  --animate-staggered-reveal: staggered-reveal 600ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  /* Use these behind `motion-safe:`, since a bare `animate-*` still runs under reduced motion. */
+  --animate-rise:    rise    300ms var(--ease-slide) both;
+  /* A page's entrance, which a tab panel replays in `useRise`. */
+  --animate-page-rise: rise 260ms var(--ease-slide);
+  --animate-flash:   flash   1100ms var(--ease-pop);
+  --animate-dot-pop: dot-pop 180ms var(--ease-pop);
+  --animate-shake:   shake   360ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+  /* Backwards fill only, so once grown a bar's width or height is free to transition. */
+  --animate-grow:    grow    520ms var(--ease-slide) backwards;
+  --animate-grow-x:  grow-x  520ms var(--ease-slide) backwards;
+  --animate-fade-up: fade-up 260ms var(--ease-pop);
+  --animate-old-out: old-out 160ms var(--ease-pop) forwards;
+  --animate-chip-out: chip-out 140ms var(--ease-pop) forwards;
+}
+
+@keyframes recpulse {
+  0%, 100% { opacity: 1;   transform: scale(1);    }
+  50%      { opacity: 0.55; transform: scale(1.15); }
+}
+@keyframes blink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.6); }
+  50%      { transform: scaleY(1.0); }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50%      { transform: translateY(-6px); }
+}
+@keyframes pop-up {
+  0%   { opacity: 0; transform: scale(0.96) translateY(4px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0);    }
+}
+@keyframes slide-in-right {
+  0%   { transform: translateX(100%); opacity: 0; }
+  100% { transform: translateX(0);    opacity: 1; }
+}
+@keyframes staggered-reveal {
+  0%   { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0);    }
+}
+/* `rise`, `flash`, and `grow` end on the element's own values, so they suit any surface and size. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+}
+@keyframes flash {
+  0%, 30% { background-color: var(--color-blsoft); }
+}
+@keyframes grow {
+  from { transform: scaleY(0); }
+}
+@keyframes grow-x {
+  from { width: 0; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(3px); }
+}
+@keyframes old-out {
+  to { opacity: 0; transform: translateY(-4px); filter: blur(2px); }
+}
+@keyframes chip-out {
+  to { opacity: 0; transform: scale(0.96); }
+}
+@keyframes toast-slide {
+  from { margin-left: -45%; }
+  to   { margin-left: 100%; }
+}
+@keyframes dot-pop {
+  0% { transform: scale(0); }
+  60% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-8px); }
+  40%, 80% { transform: translateX(8px); }
+}
+/* A row that folds to zero height without measuring it, driven by `Fold.tsx`.
+ * Plain classes rather than an `@utility`, so the Cloud gets them without scanning each file that uses them. */
+.fold {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.fold > * {
+  min-height: 0;
+}
+/* Clip only while it moves, so an open row's focus rings and shadows show. */
+.fold:is([data-folded], [data-folding]) > * {
+  overflow: hidden;
+}
+.fold[data-folded] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fold {
+    transition: grid-template-rows 220ms var(--ease-slide), opacity 180ms var(--ease-pop);
+  }
+}
+
+:root {
+  color-scheme: light;
+  --shadow-card-color:   rgba(33, 29, 24, 0.06);
+  --shadow-pop-color:    rgba(33, 29, 24, 0.18);
+  --shadow-window-color: rgba(33, 29, 24, 0.22);
+  /* --color-mut, which a data URI cannot read. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='5 8 14 8' fill='none' stroke='%238A8174' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* `data-theme` is stamped on <html> by the inline script in index.html (pre-paint) and kept current by
+ * `web/src/lib/theme.ts`. Components must not hardcode palette hex values, since utilities read `var(--color-*)`. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-paper:   #1B1815;
+  --color-card:    #26221D;
+  --color-ink:     #EDEAE2;
+  --color-grey:    #8F877B;
+  --color-ai:      #A69D90;
+  --color-line:    #3A342C;
+  --color-blue:    #7D72DE;
+  --color-blsoft:  #2C2846;
+  --color-straw:   #E8886F;
+  --color-strsoft: #3D2622;
+  --color-matcha:  #7FBE8C;
+  --color-mtsoft:  #22342A;
+  --color-mut:     #9B9285;
+  --color-raised:  #4A433A;
+  --color-lilac:     #C4A2E8;
+  --color-lilacsoft: #33283F;
+  --color-honey:     #D9B24E;
+  --color-honeysoft: #3A3120;
+  --color-honeyink:  #D9B24E;
+  --color-slate:     #A9B7C4;
+  --color-slatesoft: #2A3138;
+  --shadow-card-color:   rgba(0, 0, 0, 0.35);
+  --shadow-pop-color:    rgba(0, 0, 0, 0.5);
+  --shadow-window-color: rgba(0, 0, 0, 0.6);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='5 8 14 8' fill='none' stroke='%239B9285' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+@utility heading-hero    { @apply font-extrabold tracking-[-0.01em] text-[44px] leading-none text-ink; }
+@utility heading-greeting{ @apply font-extrabold tracking-[-0.01em] text-[34px] leading-tight text-ink; }
+@utility heading-title   { @apply font-extrabold tracking-[-0.01em] text-display leading-none text-ink; }
+@utility heading-state   { @apply font-extrabold tracking-[-0.01em] text-[30px] text-ink; }
+@utility heading-section { @apply font-extrabold tracking-[-0.01em] text-[24px] leading-none text-ink; }
+@utility heading-wordmark{ @apply font-bold tracking-[-0.01em] text-[20px] leading-none text-ink; }
+@utility heading-card    { @apply font-bold tracking-[-0.01em] text-title leading-tight text-ink; }
+@utility heading-sm      { @apply font-sans font-bold tracking-[-0.01em] text-[16px] text-ink; }
+
+html, body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  letter-spacing: 0.009em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes slideOutRight {
+  from { transform: translateX(0); }
+  to   { transform: translateX(100%); }
+}
+
+.dock-open {
+  animation: slideInRight 340ms cubic-bezier(.2, .7, .2, 1) both;
+}
+
+.dock-closed {
+  animation: slideOutRight 340ms cubic-bezier(.2, .7, .2, 1) both;
+}
+
+/* The meeting pages' wrapper. `TranscriptDock` sets `--dock-pad` while open so the notes clear it. */
+.dock-gutter {
+  padding-right: var(--dock-pad, 28px);
+}
+
+.dock-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 1;
+  touch-action: none;
+}
+.dock-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: var(--color-blue);
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.dock-handle:hover::after,
+.dock-handle:focus-visible::after,
+.dock-handle.is-dragging::after {
+  opacity: 1;
+}
+.dock-handle:focus-visible {
+  outline: none;
+}
+:root.dock-dragging,
+:root.dock-dragging * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+.recap-handle {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 12px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.recap-handle::after {
+  content: "";
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-line);
+  transition: background-color 120ms;
+}
+.recap-handle:hover::after,
+.recap-handle:focus-visible::after,
+.recap-handle.is-dragging::after {
+  background: var(--color-blue);
+}
+.recap-handle:focus-visible {
+  outline: none;
+}
+:root.chat-dragging,
+:root.chat-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+:root.recap-dragging,
+:root.recap-dragging * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+/* Live controls that stay out from under an overlapping dock, down to 200px, below which the dock covers them like the notes.
+ * The dock only overlaps once the notes column is pinned to the window's left edge, so the column's 40px padding is the only offset. */
+.dock-visible {
+  max-width: max(200px, calc(var(--dock-vw, 100vw) - var(--dock-clear, 0px) - 40px));
+}
+
+/* The Ask bar and chat window: centered under the notes, narrowed and nudged left so an open dock never covers them. */
+.ask-floating {
+  --ask-w: max(240px, min(480px, calc(var(--dock-vw, 100vw) - var(--dock-clear, 0px) - 32px)));
+  width: var(--ask-w);
+  left: max(
+    calc(16px + var(--ask-w) / 2),
+    min(
+      calc((var(--dock-vw, 100vw) - var(--dock-pad, 0px)) / 2),
+      calc(var(--dock-vw, 100vw) - var(--dock-clear, 0px) - 16px - var(--ask-w) / 2)
+    )
+  );
+}
+
+/* A full-width row inside `.dock-gutter`, such as the post page's sticky header, that must end at the dock's edge, not the notes'. */
+.dock-clear {
+  margin-right: calc(var(--dock-clear, 28px) - var(--dock-pad, 28px));
+}
+/* `TranscriptDock` sets `.dock-animating` for the 340ms its panel slides, so a drag or a window resize does not ease. */
+:root.dock-animating .dock-gutter {
+  transition: padding-right 340ms cubic-bezier(.2, .7, .2, 1);
+}
+:root.dock-animating .dock-clear {
+  transition: margin-right 340ms cubic-bezier(.2, .7, .2, 1);
+}
+:root.dock-animating .ask-floating {
+  transition: left 340ms cubic-bezier(.2, .7, .2, 1), width 340ms cubic-bezier(.2, .7, .2, 1);
+}
+
+/* `.ai-grey` uses `--color-ai`, not `--color-grey`, so AI prose sits higher-contrast than a caption
+ * while staying lighter than `--color-ink` user notes. */
+
+.ai-grey {
+  color: var(--color-ai);
+}
+
+.transcript-link {
+  color: var(--color-blue);
+  border-bottom: 1.5px dotted color-mix(in srgb, var(--color-blue) 45%, transparent);
+  margin-left: 0.35em;
+  /* "↳ 10:00" holds a space, so a narrow column could otherwise break the arrow from its time. */
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.transcript-link:hover {
+  border-bottom-color: var(--color-blue);
+}
+
+.yogurt-editor {
+  max-width: 660px;
+  margin: 0 auto;
+}
+
+
+[data-streaming] .ProseMirror,
+.yogurt-editor[data-streaming] .ProseMirror :is(h1, h2, h3) {
+  /* The second selector out-specifies the `.yogurt-editor .ProseMirror h1` ink rule below. */
+  color: var(--color-grey);
+}
+
+/* Models sometimes emit raw `ts_ms` instead of seconds, which renders wrong timestamps. The server-side
+ * merge re-derives them, so hide deep-links until the merged document lands. */
+[data-streaming] [data-transcript-link] {
+  display: none;
+}
+
+[data-streaming] .ProseMirror > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--color-blue);
+  animation: recpulse 1s steps(2) infinite;
+}
+
+/* Shimmer, dot-pulse and bar durations are fixed by the PRD motion tokens. Do not round or interpolate. */
+
+.shimmer {
+  /* The gradient needs `background-size: 200% 100%` so the shimmer keyframes sweep the full width with overlap. */
+  background: linear-gradient(
+    90deg,
+    var(--color-line) 0%,
+    var(--color-paper) 50%,
+    var(--color-line) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.25s linear infinite;
+}
+
+.enhancing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-blue, #5B4FC7);
+  animation: recpulse 1.4s ease-in-out infinite;
+}
+
+.enhancing-bar-fill {
+  width: 30%;
+  height: 100%;
+  background: var(--color-blue, #5B4FC7);
+  border-radius: 999px;
+  animation: enhancing-bar 1.8s ease-in-out infinite;
+}
+
+@keyframes enhancing-bar {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+/* The chat window grows up out of the Ask pill: from a 48px strip with the pill's radius and color at its bottom edge, which is the pill's own box since both share one anchor.
+   Clipping rather than scaling leaves `transform` and `translate` to the centering and the swipe, and needs no height. Its contents rise in once it is underway. */
+@keyframes ask-grow {
+  from { clip-path: inset(calc(100% - 48px) 0 0 round var(--radius-panel)); background-color: var(--color-card); }
+  to   { clip-path: inset(0 round var(--radius-panel)); background-color: var(--color-paper); }
+}
+@keyframes ask-shrink {
+  from { clip-path: inset(0 round var(--radius-panel)); }
+  to   { clip-path: inset(calc(100% - 48px) 0 0 round var(--radius-panel)); background-color: var(--color-card); }
+}
+@keyframes sink {
+  to { opacity: 0; transform: translateY(8px); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* `backwards` only, since a clip left on after the grow would cut off the window's shadow. */
+  .ask-grow { animation: ask-grow 300ms var(--ease-slide) backwards; }
+  .ask-grow > * { animation: rise 240ms var(--ease-slide) 80ms both; }
+  .ask-grow[data-closing] { animation: ask-shrink 300ms var(--ease-slide) forwards; }
+  .ask-grow[data-closing] > * { animation: sink 160ms var(--ease-pop) forwards; }
+}
+
+/* The class name encodes the duration (3.5s). The PRD locks this cadence. */
+.float-3500 {
+  animation: float 3.5s ease-in-out infinite;
+}
+
+/* Drop the native focus outline: user notes and AI-grey content share this one contenteditable, so the
+ * ring would read as the AI content being focused. The caret already shows where typing lands. */
+.yogurt-editor .ProseMirror {
+  outline: none;
+}
+
+.yogurt-editor .ProseMirror p {
+  margin: 0.45em 0;
+}
+.yogurt-editor .ProseMirror > :first-child {
+  margin-top: 0;
+}
+
+.yogurt-editor .ProseMirror ul,
+.yogurt-editor .ProseMirror ol {
+  margin: 0.45em 0;
+  padding-left: 1.4em;
+}
+.yogurt-editor .ProseMirror ul {
+  list-style: disc;
+}
+.yogurt-editor .ProseMirror ul ul {
+  list-style: circle;
+}
+.yogurt-editor .ProseMirror ol {
+  list-style: decimal;
+}
+.yogurt-editor .ProseMirror li {
+  margin: 0.2em 0;
+}
+.yogurt-editor .ProseMirror li > p {
+  margin: 0;
+}
+
+.yogurt-editor .ProseMirror h1,
+.yogurt-editor .ProseMirror h2,
+.yogurt-editor .ProseMirror h3 {
+  color: var(--color-ink);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 1em 0 0.35em;
+}
+.yogurt-editor .ProseMirror h1 {
+  font-size: 24px;
+}
+.yogurt-editor .ProseMirror h2 {
+  font-size: 19px;
+}
+.yogurt-editor .ProseMirror h3 {
+  font-size: 16px;
+}
+
+.yogurt-editor .ProseMirror blockquote {
+  margin: 0.6em 0;
+  padding-left: 0.9em;
+  border-left: 3px solid var(--color-line);
+  color: var(--color-mut);
+}
+
+.yogurt-editor .ProseMirror code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-chip);
+  padding: 0.1em 0.35em;
+}
+.yogurt-editor .ProseMirror pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  padding: 0.7em 0.9em;
+  margin: 0.6em 0;
+  overflow-x: auto;
+}
+.yogurt-editor .ProseMirror pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.yogurt-editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--color-mut);
+}
+
+@keyframes transcript-highlight-fade {
+  0%   { background-color: var(--color-blsoft); box-shadow: 0 0 0 6px var(--color-blsoft); }
+  100% { background-color: transparent; box-shadow: 0 0 0 6px transparent; }
+}
+.transcript-highlight {
+  animation: transcript-highlight-fade 1.5s ease-out;
+  border-radius: var(--radius-chip);
+}
+
+@keyframes vt-fade-out {
+  to { opacity: 0; }
+}
+::view-transition-old(root) {
+  animation: vt-fade-out 90ms ease-out both;
+}
+::view-transition-new(root) {
+  animation: var(--animate-page-rise);
+  animation-delay: 60ms;
+  animation-fill-mode: both;
+}
+/* After a thumb in the sidebar slid, like its nav pill or its Meetings | Voice switch, the sidebar shows only its live self, or the old thumb would fade out beside the one sliding away from it. */
+:root:has(.vt-sidebar [data-sliding])::view-transition-old(app-sidebar),
+:root:has(.vt-settings-nav .nav-pill[data-sliding])::view-transition-old(settings-nav) {
+  animation: none;
+  opacity: 0;
+}
+:root:has(.vt-sidebar [data-sliding])::view-transition-new(app-sidebar),
+:root:has(.vt-settings-nav .nav-pill[data-sliding])::view-transition-new(settings-nav) {
+  animation: none;
+}
+::view-transition-group(*) {
+  animation-duration: 300ms;
+  animation-timing-function: var(--ease-slide);
+}
+/* A title gliding between a card and a page header keeps its own text size and stays left-aligned, rather than stretching to the other box. */
+::view-transition-old(meeting-title),
+::view-transition-new(meeting-title) {
+  height: 100%;
+  width: auto;
+  object-fit: none;
+  object-position: left center;
+}
+.vt-sidebar {
+  view-transition-name: app-sidebar;
+}
+.vt-settings-nav {
+  view-transition-name: settings-nav;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}

@@ -1,0 +1,52 @@
+[package]
+name = "yogurt-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "macOS audio capture (mic + system loopback) for yogurt — 16 kHz mono i16."
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+cpal = { workspace = true }
+rubato = { workspace = true }
+rtrb = { workspace = true }
+parking_lot = { workspace = true }
+
+# screencapturekit links the Swift bridge against the macOS-only
+# ScreenCaptureKit.framework.
+#
+# objc2 + objc2-av-foundation + block2 call `AVCaptureDevice.authorizationStatus`
+# and `requestAccess` for the microphone permission check. AVFoundation has no
+# C shim, so a typed Objective-C binding is the only route.
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { workspace = true }
+objc2 = "0.6"
+objc2-av-foundation = "0.3"
+block2 = "0.6"
+directories = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+# WAV writer for `examples/wav_eartest.rs`.
+hound = "3.5"
+
+[features]
+default = []
+pro = []
+# Enable the synthetic sine-wave generator outside of `cargo test`.
+synthetic = []
+
+# tests/synthetic.rs reaches into the synthetic module via the public API; the
+# integration-test crate does not inherit the lib's `cfg(test)` gate, so it
+# needs the feature explicitly.
+[[test]]
+name = "synthetic"
+required-features = ["synthetic"]

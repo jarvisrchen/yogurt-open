@@ -1,0 +1,163 @@
+use yogurt_db::{providers, Db};
+
+#[test]
+fn it_inserts_and_lists_a_provider() {
+    let db = Db::open_in_memory().unwrap();
+    let id = providers::insert(
+        &db,
+        providers::NewProvider {
+            name: "Minimax".into(),
+            base_url: "https://api.minimax.io/v1".into(),
+            model: "MiniMax-Text-01".into(),
+            adapter: providers::adapter::HTTP.into(),
+            cli_model: String::new(),
+        },
+    )
+    .unwrap();
+    let rows = providers::list(&db).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
+    assert_eq!(rows[0].name, "Minimax");
+    assert!(!rows[0].is_active);
+}
+
+#[test]
+fn it_sets_only_one_active_provider() {
+    let db = Db::open_in_memory().unwrap();
+    let a = providers::insert(
+        &db,
+        providers::NewProvider {
+            name: "A".into(),
+            base_url: "https://a/v1".into(),
+            model: "m".into(),
+            adapter: providers::adapter::HTTP.into(),
+            cli_model: String::new(),
+        },
+    )
+    .unwrap();
+    let b = providers::insert(
+        &db,
+        providers::NewProvider {
+            name: "B".into(),
+            base_url: "https://b/v1".into(),
+            model: "m".into(),
+            adapter: providers::adapter::HTTP.into(),
+            cli_model: String::new(),
+        },
+    )
+    .unwrap();
+
+    providers::set_active(&db, &a).unwrap();
+    assert_eq!(providers::active(&db).unwrap().unwrap().id, a);
+
+    providers::set_active(&db, &b).unwrap();
+    let active = providers::active(&db).unwrap().unwrap();
+    assert_eq!(active.id, b);
+
+    let all = providers::list(&db).unwrap();
+    let active_count = all.iter().filter(|p| p.is_active).count();
+    assert_eq!(active_count, 1, "exactly one provider should be active");
+}
+
+#[test]
+fn it_exposes_presets_as_a_const_slice() {
+    let names: Vec<&str> = providers::PRESETS.iter().map(|p| p.name).collect();
+    assert!(names.contains(&"Minimax"));
+    assert!(names.contains(&"OpenAI"));
+    assert!(names.contains(&"Ollama (local)"));
+    assert!(names.contains(&"LM Studio (local)"));
+    assert!(names.contains(&"OpenRouter"));
+    assert!(names.contains(&"Google Gemini"));
+    assert!(names.contains(&"DeepSeek"));
+    assert!(names.contains(&"Celeris"));
+}
+
+/// Every `adapter: "http"` preset must be a usable base URL for `OpenAiCompatClient`, which builds its endpoint as `{base_url}/chat/completions`. `cli` presets are exempt.
+///
+/// Trap: Google documents its OpenAI shim with a trailing slash (`.../v1beta/openai/`), which yields `.../openai//chat/completions` for anyone reading `base_url` without the client's trimming constructor.
+#[test]
+fn preset_base_urls_are_absolute_and_have_no_trailing_slash() {
+    for p in providers::PRESETS {
+        assert!(!p.name.trim().is_empty(), "preset name must not be empty");
+        if p.adapter == providers::adapter::CLI {
+            assert!(
+                p.base_url.is_empty(),
+                "{}: cli preset must leave base_url empty, got {:?}",
+                p.name,
+                p.base_url
+            );
+            continue;
+        }
+        assert!(
+            p.base_url.starts_with("http://") || p.base_url.starts_with("https://"),
+            "{} base_url must be absolute, got {:?}",
+            p.name,
+            p.base_url
+        );
+        assert!(
+            !p.base_url.ends_with('/'),
+            "{} base_url must not end in a slash, got {:?}",
+            p.name,
+            p.base_url
+        );
+    }
+}
+
+/// An `adapter: "http"` preset's `default_model` is written to the providers table on clone, so it must appear in the preset's `models` datalist,
+/// or the dropdown would show a different value than what was saved. For `cli` presets the same rule applies to `default_cli_model`.
+#[test]
+fn preset_default_model_appears_in_its_models_list() {
+    for p in providers::PRESETS {
+        if p.adapter == providers::adapter::CLI {
+            if !p.default_cli_model.is_empty() {
+                assert!(
+                    p.models.contains(&p.default_cli_model),
+                    "{}: default_cli_model {:?} must be in models {:?}",
+                    p.name,
+                    p.default_cli_model,
+                    p.models
+                );
+            }
+            continue;
+        }
+        if p.default_model.is_empty() {
+            continue;
+        }
+        assert!(
+            p.models.contains(&p.default_model),
+            "{}: default_model {:?} must be in models {:?}",
+            p.name,
+            p.default_model,
+            p.models
+        );
+    }
+}
+
+#[test]
+fn list_names_returns_creation_order() {
+    let db = Db::open_in_memory().unwrap();
+    providers::insert(
+        &db,
+        providers::NewProvider {
+            name: "First".into(),
+            base_url: "https://x/v1".into(),
+            model: "m".into(),
+            adapter: providers::adapter::HTTP.into(),
+            cli_model: String::new(),
+        },
+    )
+    .unwrap();
+    providers::insert(
+        &db,
+        providers::NewProvider {
+            name: "Second".into(),
+            base_url: "https://y/v1".into(),
+            model: "m".into(),
+            adapter: providers::adapter::HTTP.into(),
+            cli_model: String::new(),
+        },
+    )
+    .unwrap();
+    let names = providers::list_names(&db).unwrap();
+    assert_eq!(names, vec!["First".to_string(), "Second".to_string()]);
+}

@@ -1,0 +1,241 @@
+use clap::Subcommand;
+use futures_util::StreamExt;
+use serde::Deserialize;
+use serde_json::json;
+use tokio_tungstenite::tungstenite::Message;
+
+use super::client::{Client, CtlError};
+
+#[derive(Subcommand, Debug)]
+pub enum ModelsCmd {
+    /// List whisper.cpp models: size, downloaded state.
+    List,
+    /// Start downloading a model.
+    Download {
+        name: String,
+        /// Follow progress on stderr (via `/ws`) until it completes or fails.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Stop an in-flight download and remove its partial file.
+    Cancel { name: String },
+    /// Delete a downloaded model.
+    Delete {
+        name: String,
+        /// Print what would be removed, without removing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+pub async fn run(cmd: ModelsCmd, port: Option<u16>, json_out: bool) -> Result<(), CtlError> {
+    match cmd {
+        ModelsCmd::List => list(port, json_out).await,
+        ModelsCmd::Download { name, wait } => download(port, json_out, &name, wait).await,
+        ModelsCmd::Cancel { name } => cancel(port, json_out, &name).await,
+        ModelsCmd::Delete { name, dry_run } => delete(port, json_out, &name, dry_run).await,
+    }
+}
+
+/// Mirrors the server's `ModelView`; serde ignores the extra `intel_supported` field.
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct ModelRow {
+    name: String,
+    size_mb: u32,
+    downloaded: bool,
+    #[serde(default)]
+    downloading: bool,
+    managed_by_homebrew: bool,
+}
+
+async fn list(port: Option<u16>, json_out: bool) -> Result<(), CtlError> {
+    let c = Client::discover(port).await?;
+    let models: Vec<ModelRow> = c.get("/api/stt/models").await?;
+    if json_out {
+        println!("{}", json!({ "models": models }));
+    } else {
+        println!("{} model(s)", models.len());
+        for m in &models {
+            let state = if m.downloaded {
+                "downloaded"
+            } else if m.downloading {
+                "downloading"
+            } else {
+                "not downloaded"
+            };
+            let src = if m.managed_by_homebrew { " (brew)" } else { "" };
+            println!("{:<16} {:>5} MB  {state}{src}", m.name, m.size_mb);
+        }
+    }
+    Ok(())
+}
+
+/// One model by name: a whisper model, or the Voice cleanup model, which `list` leaves out.
+async fn find(c: &Client, name: &str) -> Result<ModelRow, CtlError> {
+    c.get(&format!("/api/stt/models/{name}"))
+        .await
+        .map_err(|e| match e {
+            CtlError::Server(m) if m.ends_with("404 Not Found: model not found") => {
+                CtlError::local(
+                    format!("no such model: {name}"),
+                    "run `yogurt ctl models list`",
+                )
+            }
+            e => e,
+        })
+}
+
+async fn download(
+    port: Option<u16>,
+    json_out: bool,
+    name: &str,
+    wait: bool,
+) -> Result<(), CtlError> {
+    let c = Client::discover(port).await?;
+    // Beats the server's generic 404 for a typo'd name, and `--wait`'s frame filter relies on the model existing.
+    find(&c, name).await?;
+    c.post_no_body(&format!("/api/stt/models/{name}/download"))
+        .await?;
+    if json_out {
+        println!("{}", json!({ "status": "started", "model": name }));
+    } else {
+        println!("download started: {name}");
+    }
+    if wait {
+        wait_for_download(&c, name, json_out).await?;
+    }
+    Ok(())
+}
+
+async fn wait_for_download(c: &Client, name: &str, json_out: bool) -> Result<(), CtlError> {
+    let mut stream = super::ws::connect(c, "/ws").await?;
+    // ponytail: a flat cap rather than a `--timeout` flag nobody asked
+    // for. Model downloads are tens of MB to a few GB; two minutes with
+    // no progress at all means something is actually stuck.
+    let stuck = std::time::Duration::from_secs(120);
+    let mut deadline = tokio::time::Instant::now() + stuck;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(timed_out(name));
+        }
+        let msg = match tokio::time::timeout(remaining, stream.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => t,
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(e))) => {
+                return Err(CtlError::local(
+                    format!("websocket error: {e}"),
+                    "check `yogurt ctl status`",
+                ))
+            }
+            Ok(None) => {
+                return Err(CtlError::local(
+                    "server closed the connection while waiting for the download",
+                    "check `yogurt ctl status`",
+                ))
+            }
+            Err(_) => return Err(timed_out(name)),
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&msg) else {
+            continue;
+        };
+        if v.get("model").and_then(|m| m.as_str()) != Some(name) {
+            continue;
+        }
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("stt_model_download_progress") => {
+                let downloaded = v
+                    .get("bytes_downloaded")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                let total = v.get("total_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                eprintln!("progress: {downloaded}/{total} bytes");
+                deadline = tokio::time::Instant::now() + stuck;
+            }
+            Some("stt_model_download_complete") => {
+                if json_out {
+                    println!("{}", json!({ "status": "complete", "model": name }));
+                } else {
+                    println!("downloaded {name}");
+                }
+                return Ok(());
+            }
+            Some("stt_model_download_cancelled") => {
+                return Err(CtlError::local(
+                    format!("download of {name} was cancelled"),
+                    "run `yogurt ctl models download` to start it again",
+                ));
+            }
+            Some("stt_model_download_error") => {
+                let err = v
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("download failed");
+                return Err(CtlError::local(
+                    format!("download failed: {err}"),
+                    "check network connectivity and retry `yogurt ctl models download`",
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn cancel(port: Option<u16>, json_out: bool, name: &str) -> Result<(), CtlError> {
+    let c = Client::discover(port).await?;
+    c.delete_no_body(&format!("/api/stt/models/{name}/download"))
+        .await?;
+    if json_out {
+        println!("{}", json!({ "status": "cancelling", "model": name }));
+    } else {
+        println!("cancelling download: {name}");
+    }
+    Ok(())
+}
+
+fn timed_out(name: &str) -> CtlError {
+    CtlError::local(
+        format!("timed out waiting for {name} to finish downloading"),
+        "run `yogurt ctl models list` to check progress",
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteResult {
+    freed_bytes: u64,
+}
+
+async fn delete(
+    port: Option<u16>,
+    json_out: bool,
+    name: &str,
+    dry_run: bool,
+) -> Result<(), CtlError> {
+    let c = Client::discover(port).await?;
+    let row = find(&c, name).await?;
+
+    if dry_run {
+        if json_out {
+            println!(
+                "{}",
+                json!({ "dry_run": true, "model": name, "downloaded": row.downloaded })
+            );
+        } else if row.downloaded {
+            println!("would delete {name} (~{} MB)", row.size_mb);
+        } else {
+            println!("would delete {name} (not downloaded, nothing to remove)");
+        }
+        return Ok(());
+    }
+
+    let result: DeleteResult = c.delete(&format!("/api/stt/models/{name}")).await?;
+    if json_out {
+        println!(
+            "{}",
+            json!({ "status": "deleted", "model": name, "freed_bytes": result.freed_bytes })
+        );
+    } else {
+        println!("deleted {name}, freed {} bytes", result.freed_bytes);
+    }
+    Ok(())
+}

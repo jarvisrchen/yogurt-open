@@ -1,0 +1,118 @@
+# AI integration
+
+How an AI agent (Claude Code, a script, another tool) drives yogurt from the outside: starting and stopping meetings, reading transcripts and notes, without touching the UI.
+
+Read [ARCHITECTURE.md](ARCHITECTURE.md) first for *why* the server is shaped this way; this doc only covers *how to call it*.
+
+Prefer [`yogurt ctl`](CLI.md#yogurt-ctl) over the raw routes below - it resolves the port and token for you.
+The routes are what it wraps, for scripting directly or for what `ctl` doesn't cover yet.
+
+## Auth
+
+Every `/api/*` route except `/api/health` and `/api/session-token` requires a bearer token, on disk at `~/.yogurt/session-token` (`$YOGURT_DATA_DIR/session-token` when that variable is set).
+An agent on the same machine can read that file directly - it's already inside the trust boundary the server assumes (see `require_session_token` in `crates/yogurt-server/src/routes.rs`).
+The token is a local secret, equivalent to filesystem access: never send it anywhere but `localhost:7878`, never log it.
+
+```bash
+TOKEN=$(cat "${YOGURT_DATA_DIR:-$HOME/.yogurt}/session-token")
+curl -s http://localhost:7878/api/meetings/active -H "Authorization: Bearer $TOKEN"
+```
+
+## Routes
+
+`GET /api/health` returns `{"status":"ok","service":"yogurt-server","version":"0.7.0","mode":"release"}` (`"dev"` under `just dev`/`--dev`).
+`ctl` never sets or reveals a key or the token; no `ctl` column entry means only `crates/yogurt-server/src/api/meetings.rs` covers it.
+
+| Method | Path | Purpose | `ctl` |
+|---|---|---|---|
+| GET | `/api/health` | liveness | - |
+| GET | `/api/meetings` | one page of summaries, newest first (paging below) | `ctl meeting list` |
+| POST | `/api/meetings` | create (seedable, below) | `ctl meeting new` |
+| GET | `/api/meetings/search` | search, ranked, same paging as the list | `ctl meeting search` |
+| GET | `/api/meetings/active` | what's recording | `ctl status` |
+| GET | `/api/meetings/{id}` | full row | `ctl meeting show` |
+| PATCH | `/api/meetings/{id}` | update title/notes/star, or `archived: true\|false` (409 for the meeting being recorded) | - |
+| POST | `/api/meetings/archive` | archive every meeting that started before `{before}` (unix ms) and has `{label_id}`, at least one of the two, except the one recording, or count them with `preview: true`: returns `{count}` | - |
+| DELETE | `/api/meetings/{id}` | delete | `ctl meeting delete` |
+| GET | `/api/meetings/{id}/markdown` | notes export (summary) | `ctl meeting summary` |
+| POST | `/api/meetings/{id}/start` | start recording | `ctl meeting start` |
+| POST | `/api/meetings/{id}/stop` | stop recording | `ctl meeting stop` |
+| POST | `/api/meetings/{id}/enhance` | generate notes | `ctl meeting enhance` |
+| GET | `/api/meetings/{id}/previous-enhance` | the notes the last re-enhance replaced, `null` once one version is kept; 402 without Yogurt Pro, like the two rows below | - |
+| POST | `/api/meetings/{id}/previous-enhance/restore` | put those notes back, 404 when there are none | `ctl meeting keep previous` |
+| DELETE | `/api/meetings/{id}/previous-enhance` | keep the re-enhanced notes, 404 when there are none to replace | `ctl meeting keep new` |
+| GET | `/api/templates` | note formats for enhance; 402 without Yogurt Pro | - |
+| GET | `/api/meetings/{id}/recap` | live recap bullets, in memory only | `ctl meeting recap` |
+| PATCH | `/api/meetings/{id}/recap` | pause or resume the recap: `{paused}` | `ctl meeting recap --pause/--resume` |
+| POST | `/api/meetings/{id}/recap/refresh` | update the recap now (202, or 409 when not recording) | `ctl meeting recap --refresh` |
+| POST | `/api/meetings/{id}/keep-recording` | dismiss the silence auto-stop warning | - |
+| POST | `/api/meetings/{id}/mic-muted` | mute/unmute mic | `ctl meeting mute` |
+| POST | `/api/meetings/{id}/chat` | ask a question (streamed) | - |
+| POST | `/api/chat` | ask across all meetings: `{messages}`, NDJSON `{sources}` then `{delta}` lines | - |
+| GET | `/api/meetings/detected` | detected meeting | `ctl detect` |
+| POST | `/api/meetings/detected/dismiss` | dismiss prompt | `ctl detect dismiss` |
+| GET/PATCH | `/api/settings` | settings | `ctl settings get`/`set` |
+| GET | `/api/settings/providers` | list providers | `ctl provider list` |
+| POST | `/api/settings/providers/{id}/activate` | activate provider | `ctl provider activate` |
+| POST | `/api/settings/providers/{id}/test` | test provider key | `ctl provider test` |
+| GET | `/api/stt/models` | list STT models | `ctl models list` |
+| POST | `/api/stt/models/{name}/download` | download model | `ctl models download` |
+| DELETE | `/api/stt/models/{name}/download` | cancel download | `ctl models cancel` |
+| DELETE | `/api/stt/models/{name}` | delete model | `ctl models delete` |
+| GET | `/api/cloud` | Yogurt Cloud connection, not-pushed count, last push | `ctl cloud status` |
+| POST | `/api/cloud/push` | start the background push, 202 at once or 409 if one runs | `ctl cloud push` |
+| POST | `/api/cloud/machine-name` | rename this Mac in the Cloud: `{machine_name}`, 409 while a push runs | `ctl cloud rename` |
+| POST | `/api/cloud/check` | check a Cloud address: `{address}` | - |
+| POST | `/api/cloud/connect` | connect: `{address, email, password, machine_name}`, UI only | - |
+| POST | `/api/cloud/sign-in` | sign in again after a dead session: `{password}`, UI only | - |
+| POST | `/api/cloud/disconnect` | disconnect: `{mark_deleted?}` | - |
+| GET | `/ws/meetings/{id}` | transcript/enhance/chat/audio frames | `ctl ws <id>`, `ctl meeting transcript --follow` |
+| GET | `/ws` | model-download frames | `ctl ws` |
+
+## Listing meetings
+
+`GET /api/meetings` and `GET /api/meetings/search?q=<text>` take the same query parameters and return `{"meetings":[MeetingSummary],"total":n}`.
+
+| Parameter | Meaning |
+|---|---|
+| `limit` | Rows per page, 1 to 100, default 25. Anything else is a 400. |
+| `offset` | Rows to skip, default 0. |
+| `label_id` | Only meetings with this label. |
+| `starred` | `true` keeps only starred meetings. |
+| `archived` | `true` lists only archived meetings. Without it, archived meetings are left out. |
+
+`total` counts every match before `limit` and `offset`, and the filters run in SQL, so a filtered `total` is the filtered count.
+The list is ordered `started_at DESC, id DESC`. Search keeps its relevance ranking.
+
+A `MeetingSummary` is `id`, `title`, `started_at`, `ended_at`, `starred`, `stt_engine`, `llm_model`, `has_enriched`, and `labels`.
+It carries no notes or transcript, so a page of 100 is about 40 KB.
+`GET /api/meetings/{id}` returns the full row.
+
+`ctl meeting list` and `ctl meeting search` print the same shape under `--json`.
+`ctl meeting list --limit N` fetches N rows, and without `--limit` it pages through every meeting at 100 a request.
+
+## Fixture meetings
+
+`POST /api/meetings` optionally takes `transcript_json` - `{ts_ms, channel, text}` segments in the column's stored shape (see [DEBUGGING-TRANSCRIPTS.md](DEBUGGING-TRANSCRIPTS.md)) - and `ended: true`, to seed a finished meeting without recording anything.
+A malformed `transcript_json` 400s naming the bad field; no `stt_engine` is stamped, since nothing was recorded.
+`notes_md` seeds the user's raw notes on the same row (`ctl meeting new --notes-file`), so a following `/enhance` with `transcript_json: "[]"` runs exactly what End meeting runs.
+`ctl meeting new --transcript-file <segments.json>` and `--from-script <script>` wrap this - see [MODEL-EVAL.md](MODEL-EVAL.md).
+
+`/enhance`'s body also takes an optional `template` field: `"auto"` or omitted auto-detects the note format from the transcript, or pass one of the ids `GET /api/templates` lists to force it.
+The response and the meeting row both carry the resolved `template`.
+`ctl meeting enhance --template <id>` forces it from the CLI.
+Forcing a format needs Yogurt Pro: without it a known id is ignored and the model picks.
+
+## WebSocket frames
+
+Both sockets share a `{"type": "<snake_case>", ...}` discriminator.
+`/ws/meetings/{id}`: `transcript` (`ts_ms`, `channel`, `text`, `is_final`), `enhance_progress`, `chat_chunk`, `audio_level`, `stt_error`, `live_recap` (the whole recap state as the socket opens and on every change).
+`/ws`: `stt_model_download_progress`/`complete`/`error`/`cancelled`.
+`ctl ws` prints one frame per line from either; `--types` filters by `type`.
+
+## What agents should not try to do
+
+These restate the project's hard constraints:
+
+- Don't read or transmit `~/.yogurt/keys.json` - nothing in the API exposes it.
+- Don't script around the single-active-recording model (hammering `/start` on multiple ids) - the server won't stop you, and captures will overlap.
