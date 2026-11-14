@@ -1,106 +1,101 @@
-# yogurt
+# Yogurt
 
 <p align="center">
-  <img src="docs/screenshots/notes.png" alt="A finished meeting in yogurt: your notes in white, the lines the LLM added in grey with a timestamp link each, and the transcript on the right" width="900">
+  <img src="docs/screenshots/notes.png" alt="A finished meeting in Yogurt: your notes in white, the lines the LLM added in grey with a timestamp link each, and the transcript on the right" width="900">
 </p>
 
-> Local-first, open-source meeting copilot for macOS. Granola's UX, your machine.
+> A meeting copilot for macOS that runs on your own Mac.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+Yogurt records your microphone and the Mac's system audio, with no bot joining the call.
+It transcribes the meeting live, and afterwards it fills in your short notes with what was said.
+It is one program with a browser UI at `localhost:7878`, and it works with any OpenAI-compatible LLM you already pay for, or one that runs on your Mac.
 
-Yogurt records your mic and the Mac's system audio without a bot joining the call, transcribes live, and fuses your sparse bullets with what was actually said.
-It is one Rust binary with a browser UI at `localhost:7878`, and it works with any OpenAI-compatible LLM you already pay for, or a local one.
-An optional Yogurt Cloud on your own Vercel and Supabase accounts puts your meetings on your phone.
+Yogurt is free.
+An optional paid upgrade, Yogurt Pro, adds more features and is sold at [yogurt-ai.dev](https://yogurt-ai.dev).
 
-**Status:** stable, released through Homebrew and GitHub Releases.
-The [releases page](https://github.com/jarvisrchen/yogurt-releases/releases) lists every version.
+## Free and Pro
 
-## Features
+Free:
 
-**Capture**
+- Recording meetings, with the live transcript.
+- Enhanced notes, in a format Yogurt picks for each meeting.
+- The model of your choice, with your own API key or running on your Mac.
+- Ask about one meeting, or across the meetings from the last 30 days.
+- Up to 5 labels.
+- Voice dictation, with the last 24 hours of history.
+- Importing from Granola.
 
-- Records your microphone and the Mac's system audio without a bot joining the call, and transcribes live with local Parakeet or whisper.cpp, or with Deepgram.
-- A live recap in the transcript dock adds a few bullets about the discussion every 3 minutes, with Pause and Update now.
-- Mute the mic with one key, and switch mic devices mid-meeting.
-- Offers to record when a meeting window opens, and stops on its own when the call ends or goes quiet.
+Yogurt Pro adds:
 
-**Voice**
+- Ask across every meeting.
+- Unlimited labels.
+- The archive.
+- Meeting stats.
+- The live recap, and switching the model during a meeting.
+- Picking a note format, and comparing a re-enhance with the notes it replaced.
+- Coding agents as your model: Claude Code, Cursor, OpenCode, Codex, and Copilot.
+- Your full Voice history and Voice stats.
+- The Voice dictionary, snippets, and style.
+- Exporting and importing `.yogurt` meeting files.
+- Cloud sync to a Yogurt Cloud you run on your own Vercel and Supabase accounts, which puts your meetings on your phone.
 
-- [Yogurt Voice](#yogurt-voice) dictates into any app: hold a hotkey, talk, and let go.
-  It transcribes on your Mac by default, and can clean up the text with a model that also runs on your Mac.
+There are two ways to get Yogurt, and they differ in one thing.
 
-**Notes**
+| | Has the free features | Has the Pro features |
+| --- | --- | --- |
+| The official app, from Homebrew or GitHub Releases | Yes | Yes, once you add a license |
+| A build of the source in [jarvisrchen/yogurt-open](https://github.com/jarvisrchen/yogurt-open) | Yes | No. The Pro code is not in that source, so a license changes nothing there. |
 
-- After the meeting, your bullets stay as written and the LLM fuses in what was said, each line linked to its moment in the transcript.
-- Picks a note format for the kind of meeting, or uses the one you choose, and re-enhances on demand.
-- Chat with one meeting, or ask a question across all of them from the Library and see which meetings the answer came from.
-- Every meeting is also a Markdown file on disk.
-
-**Library**
-
-- Search across notes and transcripts, star meetings, sort them under labels, and archive what you want out of the way but kept.
-
-**Your data**
-
-- Bring your own OpenAI-compatible LLM, or a local CLI agent: Claude Code, Cursor Agent, OpenCode, Codex, or GitHub Copilot.
-- Import your Granola notes, with their summaries, transcripts, and folders as labels.
-- [Read every Mac's meetings and record new ones on your phone](#read-and-record-on-your-phone) from Yogurt Cloud, a webapp on your own Vercel and Supabase accounts.
-
-**Automation**
-
-- [`yogurt ctl`](docs/CLI.md#yogurt-ctl) reads and controls a running instance from the shell.
-- [Paste a meeting URL at a coding agent](#ask-an-agent-about-a-meeting) and it can answer questions about that meeting.
-
-The full list, with where each feature lives in the app, is [docs/FEATURES.md](docs/FEATURES.md).
+[docs/FEATURES.md](docs/FEATURES.md) lists every feature and where it lives in the app.
 
 ## What it looks like
 
-The Library groups meetings by day, with search, stars, labels, and the Archive in the sidebar, and you can ask one question across all of them.
+These screenshots come from the official app with Pro on, so they also show the Archive, the live recap, and the note format picker.
+
+The Library groups your meetings by day, with search, stars, and labels in the sidebar.
 
 <p align="center">
-  <img src="docs/screenshots/library.png" alt="The yogurt Library: meetings grouped by day under Today and Yesterday, each card showing its labels, transcription model, and LLM" width="900">
+  <img src="docs/screenshots/library.png" alt="The Yogurt Library: meetings grouped by day under Today and Yesterday, each card showing its labels, transcription model, and LLM" width="900">
 </p>
 
-During a meeting you type sparse bullets on the left, while the live recap and the transcript stream on the right.
+During a meeting you type short notes on the left, and the transcript streams on the right, or the live recap with Pro.
 
 <p align="center">
-  <img src="docs/screenshots/live.png" alt="A live meeting in yogurt: the notes editor and mic controls on the left, and the live recap's timestamped bullets on the right" width="900">
+  <img src="docs/screenshots/live.png" alt="A live meeting in Yogurt: the notes editor and mic controls on the left, and the live recap's timestamped bullets on the right" width="900">
 </p>
 
-After the meeting (top of this page), the grey lines are what the LLM fused in, each with a timestamp link to the moment it came from.
+After the meeting (top of this page), your notes stay as you wrote them.
+The grey lines are what the LLM added, each with a link to the moment in the transcript it came from.
 
 ## Install
 
-Requires macOS 13 or later.
+Yogurt needs macOS 13 or later.
 
 ```bash
-brew tap jarvisrchen/yogurt
-brew trust jarvisrchen/yogurt   # Homebrew 7 loads short names only from a trusted tap
-brew install yogurt
+brew install jarvisrchen/yogurt/yogurt
 yogurt start
 ```
 
-`brew install jarvisrchen/yogurt/yogurt` also works with no tap step, because a full name trusts that one formula as it installs.
-
 <details>
-<summary>From source</summary>
+<summary>Build the free app from source</summary>
 
-The free app's source is [jarvisrchen/yogurt-open](https://github.com/jarvisrchen/yogurt-open).
-It needs Rust (the toolchain in `rust-toolchain.toml`), Node 22 with pnpm, and CMake.
+You need Rust (the version in `rust-toolchain.toml`), Node 22 with pnpm, and CMake.
 
 ```bash
 git clone https://github.com/jarvisrchen/yogurt-open.git
 cd yogurt-open
 pnpm --dir web install && pnpm --dir web build
 export YOGURT_BUILD_DATE="$(git log -1 --format=%cs)"   # stamps the build date into --version
-cargo build --release       # or: cargo install --path crates/yogurt-cli
+cargo build --release
 ./target/release/yogurt start
 ```
+
+Build the web bundle first, because `cargo build` embeds it in the binary.
 
 </details>
 
 <details>
-<summary>Direct download (GitHub Releases)</summary>
+<summary>Direct download</summary>
 
 ```bash
 curl -L https://github.com/jarvisrchen/yogurt-releases/releases/latest/download/yogurt-aarch64-apple-darwin.tar.gz | tar xz
@@ -108,47 +103,93 @@ curl -L https://github.com/jarvisrchen/yogurt-releases/releases/latest/download/
 ./yogurt start
 ```
 
-- Keep `libexec/` next to the binary.
-  It holds the llama.cpp libraries for Voice cleanup, and `yogurt` will not start without it.
-- Browser-downloaded files carry a quarantine flag until notarization ships.
-  If Gatekeeper refuses to run the binary, clear it once with `xattr -dr com.apple.quarantine ./yogurt ./libexec`.
+Keep the `libexec/` folder next to the binary, because `yogurt` will not start without it.
+If macOS refuses to run the download, clear its quarantine flag once with `xattr -dr com.apple.quarantine ./yogurt ./libexec`.
 
 </details>
 
+## Your first meeting
+
+1. `yogurt start` opens `http://localhost:7878` in your browser.
+2. Grant Screen Recording and Microphone access when macOS asks.
+3. Start recording in a meeting.
+4. Type short notes while you talk.
+   A few words per point is enough.
+5. Stop the meeting, and Yogurt enhances your notes in place.
+
+If something is not working, `yogurt doctor` checks permissions, providers, and models.
+The output of `yogurt doctor --json` is safe to paste into a bug report.
+
 ## Updating
 
-A Homebrew install updates itself: when a new version is out, a notice in the corner offers Update and restart, and Settings > About has Check for updates.
-It waits for a recording to end, runs `brew upgrade`, and restarts yogurt in the same terminal on the same port.
+A Homebrew install offers Update and restart in the app when a new version is out.
+It waits for a recording to end, runs `brew upgrade`, and restarts on the same port.
+To update by hand, stop `yogurt start` with Ctrl-C and run one of these.
 
-To update by hand, stop the running server first (Ctrl-C where `yogurt start` runs), since a replaced binary takes effect only on restart.
-Your data in `~/.yogurt/` is never touched, and migrations run on the next `yogurt start`.
+| Installed with | Update |
+| --- | --- |
+| Homebrew | `brew update && brew upgrade jarvisrchen/yogurt/yogurt` |
+| Source | `git pull`, then the build steps above again, web bundle included |
+| Direct download | Run the `curl` again in the same folder |
 
-| Installed with | Update | Watch out for |
+An update never touches your data in `~/.yogurt/`.
+The [releases page](https://github.com/jarvisrchen/yogurt-releases/releases) lists every version.
+
+## Transcription models
+
+Meetings transcribe with Deepgram or with a model on your Mac.
+Deepgram is the default, needs an API key, and sends the audio to Deepgram's API.
+A local model needs no key and no network once it is downloaded.
+Switch under **Settings -> Transcription**, which also downloads the local models.
+
+| Model | Size | Notes |
 | --- | --- | --- |
-| Homebrew | `brew update && brew upgrade yogurt`, or `brew upgrade jarvisrchen/yogurt/yogurt` without a trusted tap | If [Releases](https://github.com/jarvisrchen/yogurt-releases/releases) shows a newer version than brew, the tap formula has not merged yet. Wait for it. |
-| Source | `git pull`, the build steps above, then `./target/release/yogurt start` | `cargo build` alone leaves the old UI embedded in the new binary. |
-| Direct download | Re-run the `curl` in the same folder | The quarantine flag comes back on every download, so clear it again. |
+| `parakeet-v3` | 670&nbsp;MB | Recommended, and the default local model. Multilingual and fast. |
+| `small.en` | 487&nbsp;MB | English only. Fast, and caught more personal names than Parakeet in testing. |
+| `tiny.en` | 75&nbsp;MB | English only. Smallest and roughest, good for checking that local works. |
+| `large-v3-turbo` | 1.6&nbsp;GB | Multilingual. Most accurate and slowest, and may not keep up with live speech on an Intel Mac. |
 
-## First meeting
+Yogurt checks the SHA-256 of every model file before it uses it.
+Parakeet TDT 0.6B v3 is by NVIDIA under CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.
 
-1. `yogurt start` opens `http://localhost:7878` in your default browser.
-2. Grant Screen Recording and Microphone access when macOS prompts for them.
-3. Start recording in a meeting.
-4. Type sparse notes while you talk.
-   A few words per point is enough.
-5. Stop the meeting, and your notes get enhanced in place.
+<details>
+<summary>When huggingface.co is blocked</summary>
 
-Something not working?
-`yogurt doctor` checks permissions, providers, and models, and `yogurt doctor --json` is safe to paste into a bug report.
+The transcription models are mirrored on the [yogurt-releases](https://github.com/jarvisrchen/yogurt-releases/releases/tag/models-v1) repo, and Yogurt tries that copy on `github.com` first.
+Homebrew can install them from the same mirror.
 
-## Read and record on your phone
+```bash
+brew install jarvisrchen/yogurt/yogurt-model-parakeet-v3
+brew install jarvisrchen/yogurt/yogurt-model-small-en
+brew install jarvisrchen/yogurt/yogurt-model-tiny-en
+brew install jarvisrchen/yogurt/yogurt-model-large-v3-turbo
+```
 
-Yogurt Cloud mirrors your meetings to a webapp on your own Vercel and Supabase accounts.
-It is optional and off until you connect it.
+A model that Homebrew installed shows in the picker tagged `brew`, and `brew uninstall` removes it.
+The 2.5 GB model for Voice cleanup is too large for the mirror, so it downloads only from Hugging Face.
 
-- Connect each Mac in **Settings -> Cloud sync**, and push by hand or on an interval.
-- Read every Mac's meetings on the phone, and look back at the library as of any earlier push.
-- Record a meeting on the phone with notes and a live transcript, and End enhances it with the same prompt the Mac uses.
+</details>
+
+## Yogurt Voice
+
+Voice is dictation into any app on your Mac.
+Hold the hotkey (Fn by default), talk, and let go.
+Yogurt pastes the text where your cursor is and puts your clipboard back.
+
+<p align="center">
+  <img src="docs/screenshots/voice-pill.png" alt="The Yogurt Voice pill recording at the bottom of a TextEdit window, with a red dot and purple bars following the voice" width="720">
+</p>
+
+Turn it on in **Settings -> Voice** and grant Accessibility once.
+It transcribes on your Mac by default and never saves the audio.
+An optional cleanup step removes ums and self-corrections, with a model that also runs on your Mac.
+[docs/VOICE.md](docs/VOICE.md) covers setup, the model choices, and cleanup.
+
+## Yogurt on your phone
+
+This part needs Yogurt Pro.
+Yogurt Cloud is a webapp that you deploy to your own Vercel and Supabase accounts.
+Each Mac pushes its meetings there, and you read them on your phone or record a new meeting from it.
 
 <p align="center">
   <img src="docs/screenshots/phone-library.png" alt="The Yogurt Cloud webapp on a phone: the Record button, a device filter for each Mac and phone, and meetings grouped by day, each tagged with the device it came from" width="250">
@@ -156,11 +197,13 @@ It is optional and off until you connect it.
   <img src="docs/screenshots/phone-meeting.png" alt="A meeting's enhanced notes on a phone: the user's notes in white, the added lines in grey with a timestamp link each" width="250">
 </p>
 
+Set it up with [one command](https://github.com/jarvisrchen/yogurt-releases/blob/main/cloud/SETUP.md), then connect each Mac in **Settings -> Cloud sync**.
+
 ### Android app
 
-Yogurt for Android wraps the Cloud webapp, records in the background, and can transcribe on the phone with no audio leaving it.
+Yogurt for Android wraps the Cloud webapp, records in the background, and can transcribe on the phone so that no audio leaves it.
 
-1. On the phone, open [https://github.com/jarvisrchen/yogurt-releases/releases/latest/download/yogurt-android.apk](https://github.com/jarvisrchen/yogurt-releases/releases/latest/download/yogurt-android.apk), or scan the code below.
+1. On the phone, open [the latest APK](https://github.com/jarvisrchen/yogurt-releases/releases/latest/download/yogurt-android.apk), or scan the code below.
 2. If the download sits at 100% saying "Downloading...", open Chrome's menu -> Downloads and tap **Download anyway**.
 3. Allow Chrome to install unknown apps once, then tap Install.
 
@@ -170,150 +213,92 @@ The app updates itself after that.
   <img src="docs/screenshots/android-download-qr.png" alt="QR code for the latest Yogurt for Android download" width="160">
 </p>
 
-## Yogurt Voice
+## Command line and agents
 
-Dictation into any app on your Mac: hold the hotkey (Fn by default), talk, and let go.
-Yogurt pastes the text where your cursor is and puts your clipboard back.
+`yogurt ctl` reads and controls a running Yogurt from the shell, for scripts and agents.
+[docs/CLI.md](docs/CLI.md) has every flag and command.
 
-<p align="center">
-  <img src="docs/screenshots/voice-pill.png" alt="The Yogurt Voice pill recording at the bottom of a TextEdit window, with a red dot and purple bars following the voice" width="720">
-</p>
-
-- Turn it on in **Settings -> Voice** and grant Accessibility once to the terminal that runs `yogurt`.
-- A short tap starts hands-free dictation, and Esc cancels.
-- It transcribes on your Mac with Parakeet by default, or with Deepgram if you pick it.
-- Optional cleanup removes ums and self-corrections, with a model built into yogurt or an HTTP provider from **Settings -> Model**.
-- The Voice page shows your dictation history, pace, and time saved.
-- Audio is never saved, and the text stays local unless you pick a cloud model.
-
-Setup, the model choices with their timings, cleanup, and the Voice page are in [docs/VOICE.md](docs/VOICE.md).
-
-## Transcription models
-
-Meetings transcribe with **Deepgram** (the default, needs an API key, sends audio to their API) or **locally** with no key and no network.
-Switch under **Settings -> Transcription**.
-A local model downloads from there to `~/.yogurt/models/`, and yogurt checks the SHA-256 of every file before use.
-
-| Model | Size | Intel Macs | Notes |
-| --- | --- | --- | --- |
-| `parakeet-v3` | 670 MB | fine | **Recommended, and the default for Voice and new installs.** Multilingual. About twice as fast as `small.en`, and stays fast while a meeting uses the GPU. |
-| `small.en` | 487 MB | fine | English only. Fast, and caught more personal names than Parakeet in testing. |
-| `tiny.en` | 75 MB | fine | English only. Smallest and roughest, good for checking that local works. |
-| `large-v3-turbo` | 1.6 GB | slow | Multilingual. Most accurate and slowest. It leans on arm64 Metal kernels, so it may not keep up with live speech on Intel. |
-
-- `yogurt doctor` lists the models present, and `yogurt doctor --redownload-model small.en` re-fetches one.
-- A model's files dropped into `~/.yogurt/models/` by any means are picked up, because yogurt identifies models by hash.
-- `medium.en` and `large-v3` are retired: a setting that named one moved to `large-v3-turbo`, and a downloaded copy stays listed, tagged `retired`, until you delete it.
-
-Parakeet TDT 0.6B v3 by NVIDIA, CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.
-
-<details>
-<summary>Installing models with Homebrew, when huggingface.co is blocked</summary>
-
-The models are mirrored on this repo's releases, so Homebrew fetches them from `github.com`.
-The bytes are identical to Hugging Face's and checked against the same pinned SHA-256.
-
-```bash
-brew install jarvisrchen/yogurt/yogurt-model-parakeet-v3      # 670 MB, recommended
-brew install jarvisrchen/yogurt/yogurt-model-small-en         # 487 MB
-brew install jarvisrchen/yogurt/yogurt-model-tiny-en          # 75 MB
-brew install jarvisrchen/yogurt/yogurt-model-large-v3-turbo   # 1.6 GB
-```
-
-- yogurt reads `$(brew --prefix)/share/yogurt/models` as well as `~/.yogurt/models`, and `yogurt doctor` shows which copy is in use.
-- A brew model shows up in the picker tagged `brew`, with no delete button.
-  Remove it with `brew uninstall` so Homebrew stays consistent.
-- Voice's 2.5 GB cleanup model is over GitHub's 2 GiB release-asset limit, so it downloads only from Hugging Face, through **Settings -> Voice** or `yogurt ctl models download qwen3-4b-instruct`.
-- `yogurt-model-medium-en` is deprecated with its model, and `brew uninstall` still removes it.
-
-</details>
-
-## Command line
-
-| Command | What it does |
-| --- | --- |
-| `yogurt start` | Runs the server on `127.0.0.1:7878` and opens the browser |
-| `yogurt doctor` | Checks permissions, providers, and models, and suggests repairs |
-| `yogurt ctl` | Reads and controls a running instance from the shell, built for scripts and agents |
-
-Every flag and the full `yogurt ctl` command list are in [docs/CLI.md](docs/CLI.md), and `yogurt <command> --help` is the source of truth.
-
-## Ask an agent about a meeting
-
-Every meeting page has a URL like `http://localhost:7878/meeting/<id>/post`.
-Paste one at a coding agent, and it can read that meeting's summary or transcript and answer questions about it.
-It can start and stop recordings too.
+A coding agent can read a meeting too.
 Install the skill once:
 
 ```bash
 npx skills add jarvisrchen/yogurt-releases --skill yogurt-control --global
 ```
 
-Then ask:
+Then paste a meeting's URL at the agent and ask:
 
 > what did we decide in http://localhost:7878/meeting/01a0594d-.../post
 
-The agent talks to `localhost:7878` with the session token at `~/.yogurt/session-token`.
-Your meeting content still goes wherever that agent sends its prompts, so treat it like pasting the notes into any other tool.
-[docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) has the full API for scripts.
-
-<details>
-<summary>Other ways to install the skill</summary>
-
-- `--global` puts one copy at `~/.agents/skills/yogurt-control` and links every agent you have to it.
-  Drop it to install into the current project, add `--agent claude-code` to pick one agent, and run `npx skills update` for a newer version.
-- Without Node, fetch the one file by hand, into `~/.claude/skills/` for Claude Code or `~/.codex/skills/` for Codex:
-
-  ```bash
-  mkdir -p ~/.claude/skills/yogurt-control
-  curl -fsSL https://raw.githubusercontent.com/jarvisrchen/yogurt-releases/main/.claude/skills/yogurt-control/SKILL.md \
-    -o ~/.claude/skills/yogurt-control/SKILL.md
-  ```
-
-- A clone of this repo already has it at `.claude/skills/yogurt-control/`.
-
-</details>
+The agent talks to `localhost:7878` on your Mac.
+Your meeting content then goes wherever that agent sends its prompts, so treat it like pasting the notes into any other tool.
+[docs/AI-INTEGRATION.md](docs/AI-INTEGRATION.md) has the API for scripts.
 
 ## How it works
 
-One Rust process does everything: ScreenCaptureKit capture, live transcription, the LLM pass, an axum HTTP and WebSocket server, SQLite storage, Yogurt Voice, and the Cloud push.
-There are no sidecars and no Electron.
-The only child processes are a CLI agent you opt into as the LLM provider, and `open` for the browser.
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the full design, sequence diagrams, and trust boundaries.
+One Rust process does everything: audio capture with ScreenCaptureKit, live transcription, the LLM calls, the web server, SQLite storage, and Voice.
+There is no Electron.
+Your meetings live in `~/.yogurt/` as a SQLite database, and each one is also a Markdown file.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the full design.
 
 ```mermaid
 flowchart TB
   mic["Mic + system audio"] --> y["yogurt<br/>one process on your Mac"]
   y --> disk[("~/.yogurt<br/>SQLite + Markdown")]
-  y -. "meetings, when you push" .-> cloud["Your Yogurt Cloud<br/>your Vercel + Supabase,<br/>read on your phone"]
   y -. "notes, transcripts, cleanup text" .-> llm["Your LLM provider"]
   y -. "audio, when Deepgram transcribes" .-> dg["Deepgram"]
   y -. "API key + reads, during an import" .-> gr["Granola"]
+  y -. "meetings, when you push (Pro)" .-> cloud["Your Yogurt Cloud<br/>your Vercel + Supabase"]
 ```
 
 ## Privacy
 
-Nothing leaves your Mac except along the dotted lines above, and each one is a setting you control.
+Your data leaves your Mac only along the dotted lines above, and each one is a setting you control.
 
 | Data | Leaves your Mac only if | And goes to |
 | --- | --- | --- |
-| Meeting audio | You keep Deepgram, the default, in **Settings -> Transcription** and do not switch to Local | Deepgram, audio only. It is deleted from disk after transcription. |
+| Meeting audio | Deepgram transcribes your meetings, which is the default until you pick a local model | Deepgram. The audio is deleted from disk after transcription. |
 | Voice audio | You pick Deepgram in **Settings -> Voice** | Deepgram. Voice never writes audio to disk. |
 | Dictated text | You turn on Voice cleanup with a cloud provider | That provider |
 | Notes and transcripts | You configure an LLM provider | That provider |
-| Meetings | You connect a Yogurt Cloud and press Sync now or turn on Auto-push | Your own Supabase, behind your Cloud login and PIN |
+| Meetings | You connect a Yogurt Cloud and push to it | Your own Supabase project |
+| Voice dictionary, snippets, and daily totals | You press Upload to Cloud, or turn on Share daily totals | Your own Supabase project |
 | Granola API key | You save or test it, preview, or import | Granola, with read requests only |
-| API keys | Each is sent only to its own provider | Stored only in `~/.yogurt/keys.json` (mode 0600), never in the database, a response, or a log |
+| API keys | Each is sent only to its own provider | Stored only in `~/.yogurt/keys.json`, readable by you alone |
 
-There is no telemetry, no phone-home, and no crash reporting, opt-in or otherwise.
+Yogurt has no telemetry, no analytics, and no crash reporting.
+Besides the rows above, it makes these requests on its own behalf, and none of them carries your data:
+
+- A Homebrew install checks for a new version once a day, and when you press Check for updates, by reading the Homebrew formula from `raw.githubusercontent.com`.
+  You can turn the daily check off in **Settings -> About**, and a build from source or a direct download never makes it.
+  Pressing Update reads the formula again and asks GitHub for the size of the download.
+- A model downloads from `github.com` or `huggingface.co` when you ask for it.
+- The Android app asks GitHub for a new version when it opens.
+
 [SECURITY.md](SECURITY.md) has the threat model and how to report a vulnerability.
+A Yogurt Cloud and the Android app send data of their own, such as a phone recording's audio to Deepgram.
+The [privacy policy](https://yogurt-ai.dev/privacy) lists all of it.
 
 ## Contributing
 
 Issues and pull requests go to [jarvisrchen/yogurt-open](https://github.com/jarvisrchen/yogurt-open).
 
+Yogurt is developed in a private repository that also holds Yogurt Pro, and yogurt-open receives one commit per release.
+So a pull request is never merged on GitHub.
+When one is accepted, it is applied to the private repository and labelled `ported`.
+It ships in the next release, and that release's commit credits you with a `Co-authored-by` line.
+The pull request closes then, with a link to the release.
+
+Before you open one, run the checks a free build must pass:
+
+```bash
+pnpm --dir web install && pnpm --dir web build
+YOGURT_MEMORY_KEYSTORE=1 cargo test --workspace --features yogurt-stt/local-stt
+cargo clippy --workspace --features yogurt-stt/local-stt --all-targets -- -D warnings
+pnpm --dir web test
+```
+
 ## License
 
-The source in [jarvisrchen/yogurt-open](https://github.com/jarvisrchen/yogurt-open) is MIT.
+The source in [jarvisrchen/yogurt-open](https://github.com/jarvisrchen/yogurt-open) is under the MIT License.
 See [LICENSE](LICENSE).
-The official app from Homebrew and GitHub Releases adds Yogurt Pro and ships under the [Yogurt Software License](https://yogurt-ai.dev/license), which keeps the MIT notice for the open parts.
+The official app from Homebrew and GitHub Releases also contains Yogurt Pro, and ships under the [Yogurt Software License](https://yogurt-ai.dev/license).
