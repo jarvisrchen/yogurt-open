@@ -53,12 +53,10 @@ fn build_test_state(bind_port: u16) -> (AppState, String, tempfile::TempDir) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn it_fans_transcript_events_to_ws_clients() {
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let (state, token, _tmp) = build_test_state(addr.port());
     let app = yogurt_server::__test_router(state.clone());
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     });

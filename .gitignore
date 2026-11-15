@@ -3,6 +3,8 @@ node_modules/
 .env
 .env.local
 .env*.local
+# The release signing key, which only scripts/release.sh reads.
+.creds/
 .vercel
 .next/
 dist/

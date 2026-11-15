@@ -29,15 +29,12 @@ async fn spawn_server() -> (
         .as_str()
         .to_string();
 
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral");
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let addr = listener.local_addr().unwrap();
 
     std::env::set_var("YOGURT_MEMORY_KEYSTORE", "1");
     let cfg = RunConfig {
-        addr,
+        listener,
         mode: Mode::Release,
         db_path: Some(db_path.clone()),
         session_token_path: Some(token_path),
@@ -650,29 +647,21 @@ impl LlmClient for FixedLlm {
     }
 }
 
-async fn serve(state: AppState) -> tokio::task::JoinHandle<()> {
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], state.bind_port));
+async fn serve(state: AppState, listener: tokio::net::TcpListener) -> tokio::task::JoinHandle<()> {
     let app = yogurt_server::__test_router(state);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     })
-}
-
-async fn ephemeral_port() -> u16 {
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = probe.local_addr().unwrap().port();
-    drop(probe);
-    port
 }
 
 /// A model that answers with nothing must surface as an error, not the user's notes persisted as the enhanced document.
 /// `merge_notes(notes, "")` is exactly the notes, so only the handler can notice.
 #[tokio::test(flavor = "multi_thread")]
 async fn enhance_fails_loudly_when_the_model_returns_nothing() {
-    let port = ephemeral_port().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
     let (state, token, tmp) = build_test_state(port, Arc::new(FixedLlm("  \n\n".into())));
-    let _server = serve(state.clone()).await;
+    let _server = serve(state.clone(), listener).await;
     let meeting_id = state.meetings.create().await.id;
 
     let resp = reqwest::Client::new()
@@ -718,11 +707,12 @@ async fn enhance_fails_loudly_when_the_model_returns_nothing() {
 /// The merge must render it as ink inside the bullet exactly once, not paint the bullet grey and append an orphan `247k`.
 #[tokio::test(flavor = "multi_thread")]
 async fn enhance_weaves_a_one_word_note_into_the_ai_bullet_without_duplicating_it() {
-    let port = ephemeral_port().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
     let model_output =
         "## Offer\n\n- Base salary: 247k\n- 464k RSU with quarterly vesting at 6.25% per quarter\n";
     let (state, token, _tmp) = build_test_state(port, Arc::new(FixedLlm(model_output.into())));
-    let _server = serve(state.clone()).await;
+    let _server = serve(state.clone(), listener).await;
     let meeting_id = state.meetings.create().await.id;
 
     let resp = reqwest::Client::new()
@@ -807,13 +797,11 @@ fn build_test_state(
 /// The last `streaming` text must equal the raw MockLlm completion, computed independently via `Prompts::render_enhance` + `MockLlm::complete`.
 #[tokio::test(flavor = "multi_thread")]
 async fn enhance_streams_progress_over_ws() {
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let (state, token, _tmp) = build_mock_test_state(addr.port());
     let prompts = state.prompts.clone();
     let app = yogurt_server::__test_router(state.clone());
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     });

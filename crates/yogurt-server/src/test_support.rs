@@ -82,9 +82,8 @@ pub struct TestServer {
 pub async fn run_with_mock_llm(
     chunks: &[&str],
 ) -> Result<(TestServer, tokio::task::JoinHandle<()>)> {
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = probe.local_addr()?;
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
 
     let tmp = tempfile::tempdir()?;
     let db_path = tmp.path().join("yogurt-test.db");
@@ -123,7 +122,6 @@ pub async fn run_with_mock_llm(
     };
 
     let app = crate::__test_router(state.clone());
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     let server_state = state.clone();
     let handle = tokio::spawn(async move {
         axum::serve(listener, app).await.ok();

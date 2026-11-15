@@ -56,6 +56,16 @@ Parakeet TDT 0.6B v3 by NVIDIA, CC BY 4.0, converted to ONNX and quantized to in
 The weights come from [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) through [csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8).
 No library above is GPL or LGPL: sherpa-onnx 2.0.1 builds its TTS without espeak-ng.
 
+## Website icons
+
+The site at yogurt-ai.dev serves these from `site/public/icons.svg`, with their license texts in `site/public/licenses/`.
+The app's release does not ship that sprite.
+
+| Component | Version | License | Where it comes from |
+|---|---|---|---|
+| GitHub mark (`mark-github`) from Octicons | `icons/mark-github-24.svg` at `ea8e6bb` | MIT | https://github.com/primer/octicons |
+| Lucide icons, every other symbol but the Yogurt logo | as in `lucide-react` 1.34.0 | ISC | https://github.com/lucide-icons/lucide |
+
 ## Dependencies
 
 | Crate | Version | License | Repository |

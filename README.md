@@ -264,6 +264,7 @@ Your data leaves your Mac only along the dotted lines above, and each one is a s
 | Voice dictionary, snippets, and daily totals | You press Upload to Cloud, or turn on Share daily totals | Your own Supabase project |
 | Granola API key | You save or test it, preview, or import | Granola, with read requests only |
 | API keys | Each is sent only to its own provider | Stored only in `~/.yogurt/keys.json`, readable by you alone |
+| A purchased Yogurt Pro license | You add it, which activates this Mac once, or press Try again, rename this Mac, ask for the list of your Macs by email, or remove the license | yogurt-ai.dev: the license, a hash of this Mac's hardware ID salted with the license's email, and the name you give the Mac, its model by default. Asking for the list sends only the license. |
 
 Yogurt has no telemetry, no analytics, and no crash reporting.
 Besides the rows above, it makes these requests on its own behalf, and none of them carries your data:

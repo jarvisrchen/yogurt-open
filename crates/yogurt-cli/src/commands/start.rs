@@ -1,7 +1,7 @@
 use anyhow::Result;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 use yogurt_server::{Mode, RunConfig};
 
 pub struct StartArgs {
@@ -16,12 +16,38 @@ pub struct StartArgs {
 const DEV_VOICE_SHORTCUT: &str = "right_option+m";
 
 pub async fn run(args: StartArgs) -> Result<()> {
-    let addr: SocketAddr = ([127, 0, 0, 1], args.port).into();
+    let listener = match std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], args.port)))
+    {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            let port = args.port;
+            // `wrapping_add(1)` on 65535 gives 0, which asks for an ephemeral port. Suggest port-1 at the upper bound.
+            let next_port_suggestion = port
+                .checked_add(1)
+                .filter(|p| *p > 0)
+                .map(|p| format!("Try --port {p} or run lsof -i :{port}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "No nearby port free -- kill the process holding {port} \
+                         with `lsof -i :{port}` and `kill <pid>`"
+                    )
+                });
+            eprintln!("Port {port} is already in use. {next_port_suggestion}");
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let addr = listener.local_addr()?;
     let mode = if args.dev { Mode::Dev } else { Mode::Release };
-    let url = format!("http://127.0.0.1:{}", args.port);
+    let url = format!("http://127.0.0.1:{}", addr.port());
+    if args.port == 0 {
+        // The one way a caller of `--port 0` learns the port; tests read this line.
+        // `println!` would panic, and stop the server, if nothing reads stdout.
+        let _ = writeln!(std::io::stdout(), "yogurt is listening on {url}");
+    }
 
     // Relocates both SQLite databases, keys.json, the notes folder, and the session token. Models stay under ~/.yogurt.
-    let mut cfg = RunConfig::new(addr, mode);
+    let mut cfg = RunConfig::new(listener, mode);
     let data_dir = crate::data_dir::resolve(args.data_dir)?;
     let own_data = data_dir.as_deref().is_some_and(|d| !is_default_data_dir(d));
     cfg.voice_shortcut = voice_shortcut(args.voice_shortcut, args.dev || own_data);
@@ -42,16 +68,9 @@ pub async fn run(args: StartArgs) -> Result<()> {
     }
 
     if !args.no_open {
-        // Poll until the server listens so a slow cold boot doesn't open the browser on "connection refused".
+        // The listener is already bound, so the browser's request waits in its backlog until the server serves it.
         let url_for_open = url.clone();
-        let probe_addr = addr;
         tokio::spawn(async move {
-            for _ in 0..40 {
-                if tokio::net::TcpStream::connect(probe_addr).await.is_ok() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
             if let Err(e) = open::that(&url_for_open) {
                 tracing::warn!(?e, "failed to open browser");
             }
@@ -59,28 +78,7 @@ pub async fn run(args: StartArgs) -> Result<()> {
     }
 
     tracing::info!(%url, "yogurt is starting");
-    match yogurt_server::run_with_config(cfg).await {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if is_addr_in_use(&err) {
-                let port = args.port;
-                // `wrapping_add(1)` on 65535 gives 0, which asks for an ephemeral port. Suggest port-1 at the upper bound.
-                let next_port_suggestion = port
-                    .checked_add(1)
-                    .filter(|p| *p > 0)
-                    .map(|p| format!("Try --port {p} or run lsof -i :{port}"))
-                    .unwrap_or_else(|| {
-                        format!(
-                            "No nearby port free -- kill the process holding {port} \
-                             with `lsof -i :{port}` and `kill <pid>`"
-                        )
-                    });
-                eprintln!("Port {port} is already in use. {next_port_suggestion}");
-                std::process::exit(1);
-            }
-            Err(err)
-        }
-    }
+    yogurt_server::run_with_config(cfg).await
 }
 
 fn voice_shortcut(flag: Option<String>, dev: bool) -> Option<String> {
@@ -93,17 +91,6 @@ fn is_default_data_dir(dir: &std::path::Path) -> bool {
         .ok()
         .and_then(|d| canonical(&d))
         .is_some_and(|d| Some(d) == canonical(dir))
-}
-
-fn is_addr_in_use(err: &anyhow::Error) -> bool {
-    for cause in err.chain() {
-        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
-            if io_err.kind() == std::io::ErrorKind::AddrInUse {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 #[cfg(test)]

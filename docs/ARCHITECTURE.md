@@ -221,14 +221,15 @@ sequenceDiagram
     participant B as Browser
 
     U->>CLI: yogurt
-    CLI->>S: run_with_config(addr, mode)
+    CLI->>CLI: bind TcpListener on --port
+    CLI->>S: run_with_config(listener, mode)
     S->>S: Storage::init_at(~/.yogurt/db.sqlite)<br/>WAL, writer + reader conns, migrations
     S->>S: load_or_create session token (0600 on disk)
     S->>S: AppState::production(...)<br/>FileKeyStore::open_default() loads keys.json once
     S->>KC: seed providers from YOGURT_*_API_KEY
     S->>KC: seed Deepgram STT key
     S->>S: repair legacy escaped-span rows
-    S->>S: bind TcpListener, axum::serve
+    S->>S: axum::serve on the bound listener
     U->>B: open http://localhost:7878
     B->>S: GET /api/session-token (Origin-checked, no token)
     S-->>B: { token }
@@ -1132,7 +1133,7 @@ Measured in a scratch prefix on 2026-11-12, the 3.4.0 to 3.5.0 update took 6 sec
 The restart waits until the install lands and nothing is busy for two polls in a row, since the browser asks for a summary only after the stop returns.
 It then takes the Cloud lock and never releases it, so no token refresh is cut off mid-rotation.
 The server future returns (`update::restarting`), the log flushes, and `main` calls `exec` on `<prefix>/bin/yogurt` with the original arguments plus `--no-open`.
-`exec` replaces the process image in place: the PID, the terminal, and the session token stay the same, and every descriptor yogurt opens is close-on-exec, so the new image binds the same port and opens SQLite fresh.
+`exec` replaces the process image in place: the PID, the terminal, its permission grants, and the session token stay the same, and every descriptor yogurt opens is close-on-exec, so the new image binds the same port and opens SQLite fresh.
 macOS credits the mic and Screen Recording grants to the terminal that launched yogurt, so they carry over with no prompt.
 A launchd agent was rejected for this reason, since a bare binary started by launchd would hold the grants itself and lose them on each release's new code signature.
 The open tab polls `/api/health` once a second while an install runs.

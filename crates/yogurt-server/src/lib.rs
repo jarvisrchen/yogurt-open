@@ -68,7 +68,6 @@ pub fn __test_only_aux_state(
 }
 
 use anyhow::{Context, Result};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -86,7 +85,8 @@ pub enum Mode {
 
 /// Path overrides let tests and `$YOGURT_DATA_DIR` avoid clobbering the real `~/.yogurt/`.
 pub struct RunConfig {
-    pub addr: SocketAddr,
+    /// Bound by the caller, so a port chosen with port 0 is never released before the server takes it.
+    pub listener: std::net::TcpListener,
     pub mode: Mode,
     pub db_path: Option<PathBuf>,
     pub session_token_path: Option<PathBuf>,
@@ -100,9 +100,9 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
-    pub fn new(addr: SocketAddr, mode: Mode) -> Self {
+    pub fn new(listener: std::net::TcpListener, mode: Mode) -> Self {
         Self {
-            addr,
+            listener,
             mode,
             db_path: None,
             session_token_path: None,
@@ -114,11 +114,8 @@ impl RunConfig {
     }
 }
 
-pub async fn run(addr: SocketAddr, mode: Mode) -> Result<()> {
-    run_with_config(RunConfig::new(addr, mode)).await
-}
-
 pub async fn run_with_config(cfg: RunConfig) -> Result<()> {
+    let addr = cfg.listener.local_addr()?;
     let db_path = match cfg.db_path {
         Some(p) => p,
         None => storage::default_db_path()?,
@@ -138,7 +135,7 @@ pub async fn run_with_config(cfg: RunConfig) -> Result<()> {
 
     let state = AppState::production(state::ProductionConfig {
         mode: cfg.mode,
-        bind_port: cfg.addr.port(),
+        bind_port: addr.port(),
         storage,
         session,
         notes_dir,
@@ -179,8 +176,9 @@ pub async fn run_with_config(cfg: RunConfig) -> Result<()> {
     voice::spawn(state.clone());
 
     let app = routes::router(state.clone());
-    tracing::info!(addr = ?cfg.addr, mode = ?cfg.mode, "yogurt-server starting");
-    let listener = TcpListener::bind(cfg.addr).await?;
+    tracing::info!(?addr, mode = ?cfg.mode, "yogurt-server starting");
+    cfg.listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(cfg.listener)?;
     state.pro.started(&state);
     tokio::select! {
         served = axum::serve(listener, app) => served?,

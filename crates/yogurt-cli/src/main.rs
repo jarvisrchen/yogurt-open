@@ -25,7 +25,7 @@ enum Cmd {
 
 #[derive(clap::Args, Debug)]
 struct StartArgs {
-    /// TCP port to bind.
+    /// TCP port to bind. 0 picks a free port and prints its URL.
     #[arg(long, default_value_t = 7878)]
     port: u16,
     /// Do not auto-open the browser on start.

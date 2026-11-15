@@ -75,12 +75,10 @@ async fn next_of_type(ws: &mut Ws, ty: &str) -> serde_json::Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn system_stall_reaches_ws_while_mic_keeps_flowing() {
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
     let (state, token, _tmp) = build_test_state(addr.port());
     let app = yogurt_server::__test_router(state.clone());
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     });

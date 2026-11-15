@@ -27,6 +27,9 @@ async function open(page: Page, path = "/settings/general") {
   // Left to the dev proxy this fails late, and the rows it decides then mount while a thumb is being watched.
   await page.route("**/api/license", (r) => r.fulfill({ json: { license: null } }));
   await page.goto(path);
+  // A web font that lands late resizes the options. A read just then finds the thumb at its old width, and a click in that frame gets re-placed without the slide a test waits for.
+  await page.getByRole("radiogroup").first().waitFor();
+  await page.evaluate(async () => void (await document.fonts.ready));
 }
 
 const appearance = (page: Page) => page.getByRole("radiogroup", { name: "Appearance" });

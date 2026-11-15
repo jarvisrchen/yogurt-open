@@ -5,15 +5,12 @@ use yogurt_server::{run_with_config, Mode, RunConfig};
 #[tokio::test]
 async fn it_responds_to_health() {
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral");
-    let addr: SocketAddr = probe.local_addr().expect("local_addr");
-    drop(probe);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let addr: SocketAddr = listener.local_addr().expect("local_addr");
 
     std::env::set_var("YOGURT_MEMORY_KEYSTORE", "1");
     let cfg = RunConfig {
-        addr,
+        listener,
         mode: Mode::Release,
         db_path: Some(tmp.path().join("yogurt-test.db")),
         session_token_path: Some(tmp.path().join("session-token")),

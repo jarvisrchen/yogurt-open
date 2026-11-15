@@ -138,12 +138,9 @@ async fn it_does_not_suggest_port_0_at_upper_boundary() {
 async fn it_writes_a_log_file_under_the_data_dir() {
     let home = tempfile::tempdir().expect("HOME tempdir");
     let data = tempfile::tempdir().expect("data dir tempdir");
-    let probe = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    let port = probe.local_addr().expect("local_addr").port();
-    drop(probe);
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_yogurt"))
-        .args(["start", "--port", &port.to_string(), "--no-open"])
+        .args(["start", "--port", "0", "--no-open"])
         .env("HOME", home.path())
         .env("YOGURT_DATA_DIR", data.path())
         .env("YOGURT_MEMORY_KEYSTORE", "1")

@@ -2,7 +2,6 @@
 
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
-use std::time::Duration;
 use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -31,18 +30,12 @@ async fn spawn_test_server() -> TestServer {
         .as_str()
         .to_string();
 
-    // Bind a std listener to get a free port, drop it, and have the server bind it. The race window is tiny on loopback.
-    let port = {
-        let l = StdTcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
-        let p = l.local_addr().unwrap().port();
-        drop(l);
-        p
-    };
-    let addr = format!("127.0.0.1:{port}").parse().unwrap();
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
+    let addr = listener.local_addr().unwrap();
 
     std::env::set_var("YOGURT_MEMORY_KEYSTORE", "1");
     let cfg = RunConfig {
-        addr,
+        listener,
         mode: Mode::Release,
         db_path: Some(db_path),
         session_token_path: Some(token_path),
@@ -54,15 +47,8 @@ async fn spawn_test_server() -> TestServer {
     };
     let join = tokio::spawn(yogurt_server::run_with_config(cfg));
 
-    for _ in 0..50 {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
     TestServer {
-        port,
+        port: addr.port(),
         _tempdir: tmp,
         token,
         join,

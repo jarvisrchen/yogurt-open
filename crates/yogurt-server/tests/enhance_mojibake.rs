@@ -78,12 +78,11 @@ async fn spawn_server() -> (
         .expect("seed session token")
         .as_str()
         .to_string();
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let addr = listener.local_addr().unwrap();
     std::env::set_var("YOGURT_MEMORY_KEYSTORE", "1");
     let cfg = RunConfig {
-        addr,
+        listener,
         mode: Mode::Release,
         db_path: Some(db_path.clone()),
         session_token_path: Some(token_path),

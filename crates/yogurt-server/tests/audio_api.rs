@@ -12,15 +12,12 @@ async fn spawn_server() -> (SocketAddr, String, tempfile::TempDir) {
         .0;
 
     // Bind-drop-rebind races; the polling loop below tolerates it.
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral");
-    let addr: SocketAddr = probe.local_addr().expect("local_addr");
-    drop(probe);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    let addr: SocketAddr = listener.local_addr().expect("local_addr");
 
     std::env::set_var("YOGURT_MEMORY_KEYSTORE", "1");
     let cfg = RunConfig {
-        addr,
+        listener,
         mode: Mode::Release,
         db_path: Some(db_path),
         session_token_path: Some(token_path),

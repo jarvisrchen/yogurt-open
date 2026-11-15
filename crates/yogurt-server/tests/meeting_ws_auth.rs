@@ -28,9 +28,8 @@ async fn spawn() -> TestSetup {
     let token_str = session_token.as_str().to_string();
     let session: Arc<SessionToken> = Arc::new(session_token);
 
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
 
     let (markdown_exporter, prompts) =
         yogurt_server::__test_only_aux_state(tmp.path().join("notes")).expect("build aux state");
@@ -59,7 +58,6 @@ async fn spawn() -> TestSetup {
         pro: yogurt_server::entitlements::hooks(),
     };
     let app = yogurt_server::__test_router(state.clone());
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     });
