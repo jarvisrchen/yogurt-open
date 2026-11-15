@@ -2,7 +2,6 @@
 
 ## Supported versions
 
-Yogurt is pre-1.0.
 Only the latest tagged release receives security fixes.
 There is no long-term support branch and no backporting to older tags.
 
@@ -15,9 +14,7 @@ Use GitHub's private vulnerability reporting instead:
 This opens a private draft security advisory visible only to the maintainer
 until a fix is ready.
 
-If you cannot use GitHub's advisory flow, email the maintainer address listed
-on the [GitHub profile](https://github.com/jarvisrchen) instead of filing a
-public issue.
+If you cannot use GitHub's advisory flow, email support@yogurt-ai.dev instead of filing a public issue.
 
 Include what you found, how to reproduce it, and the potential impact.
 A best-effort acknowledgment and fix timeline will follow; there is no

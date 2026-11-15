@@ -1,10 +1,29 @@
 # Yogurt
 
+> A meeting copilot for macOS that runs on your own Mac.
+
+## Quick start
+
+Yogurt needs macOS 13 or later.
+
+```bash
+brew install jarvisrchen/yogurt/yogurt
+yogurt start
+```
+
+1. `yogurt start` opens `http://localhost:7878` in your browser.
+   Grant Screen Recording and Microphone access when macOS asks.
+2. Start recording in a meeting.
+3. Type short notes while you talk.
+   A few words per point is enough.
+4. Stop the meeting, and Yogurt enhances your notes in place.
+
+If something is not working, `yogurt doctor` checks permissions, providers, and models.
+The output of `yogurt doctor --json` is safe to paste into a bug report.
+
 <p align="center">
   <img src="docs/screenshots/notes.png" alt="A finished meeting in Yogurt: your notes in white, the lines the LLM added in grey with a timestamp link each, and the transcript on the right" width="900">
 </p>
-
-> A meeting copilot for macOS that runs on your own Mac.
 
 Yogurt records your microphone and the Mac's system audio, with no bot joining the call.
 It transcribes the meeting live, and afterwards it fills in your short notes with what was said.
@@ -64,17 +83,13 @@ During a meeting you type short notes on the left, and the transcript streams on
   <img src="docs/screenshots/live.png" alt="A live meeting in Yogurt: the notes editor and mic controls on the left, and the live recap's timestamped bullets on the right" width="900">
 </p>
 
-After the meeting (top of this page), your notes stay as you wrote them.
+After the meeting (the first screenshot on this page), your notes stay as you wrote them.
 The grey lines are what the LLM added, each with a link to the moment in the transcript it came from.
 
 ## Install
 
-Yogurt needs macOS 13 or later.
-
-```bash
-brew install jarvisrchen/yogurt/yogurt
-yogurt start
-```
+Homebrew, as in [Quick start](#quick-start), is the usual way, and it brings in-app updates.
+Yogurt also builds from source or runs from a direct download.
 
 <details>
 <summary>Build the free app from source</summary>
@@ -107,18 +122,6 @@ Keep the `libexec/` folder next to the binary, because `yogurt` will not start w
 If macOS refuses to run the download, clear its quarantine flag once with `xattr -dr com.apple.quarantine ./yogurt ./libexec`.
 
 </details>
-
-## Your first meeting
-
-1. `yogurt start` opens `http://localhost:7878` in your browser.
-2. Grant Screen Recording and Microphone access when macOS asks.
-3. Start recording in a meeting.
-4. Type short notes while you talk.
-   A few words per point is enough.
-5. Stop the meeting, and Yogurt enhances your notes in place.
-
-If something is not working, `yogurt doctor` checks permissions, providers, and models.
-The output of `yogurt doctor --json` is safe to paste into a bug report.
 
 ## Updating
 
