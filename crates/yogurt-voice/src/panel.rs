@@ -43,8 +43,8 @@ const LIFT: f64 = 24.0;
 const FADE: f64 = 0.16;
 const TICK: Duration = Duration::from_nanos(1_000_000_000 / 30);
 
-type Rgba = (f64, f64, f64, f64);
-const fn hex(rgb: u32, a: f64) -> Rgba {
+pub(crate) type Rgba = (f64, f64, f64, f64);
+pub(crate) const fn hex(rgb: u32, a: f64) -> Rgba {
     (
         ((rgb >> 16) & 0xff) as f64 / 255.0,
         ((rgb >> 8) & 0xff) as f64 / 255.0,
@@ -99,12 +99,15 @@ fn after(delay: Duration, f: impl FnOnce(&Pill) + Send + 'static) {
     let _ = DispatchQueue::main().after(when, move || with_pill(f));
 }
 
-fn color(c: Rgba) -> objc2_core_foundation::CFRetained<CGColor> {
+pub(crate) fn color(c: Rgba) -> objc2_core_foundation::CFRetained<CGColor> {
     CGColor::new_srgb(c.0, c.1, c.2, c.3)
 }
 
 /// A view that hosts a layer of ours, so AppKit leaves that layer's properties alone.
-fn hosting_view(mtm: MainThreadMarker, frame: CGRect) -> (Retained<NSView>, Retained<CALayer>) {
+pub(crate) fn hosting_view(
+    mtm: MainThreadMarker,
+    frame: CGRect,
+) -> (Retained<NSView>, Retained<CALayer>) {
     let layer = CALayer::new();
     let view = NSView::initWithFrame(NSView::alloc(mtm), frame);
     view.setLayer(Some(&layer));
@@ -547,12 +550,17 @@ extern "C" {
 }
 
 /// Manrope SemiBold, the app's own face, as in the mocks. Falls back to the system font.
-fn manrope(size: f64) -> Retained<NSFont> {
+pub(crate) fn manrope(size: f64) -> Retained<NSFont> {
     static WOFF: &[u8] = include_bytes!("../assets/manrope-latin-600-normal.woff");
+    bundled_font(WOFF, size, "Manrope")
+}
+
+/// A font the binary carries, or the system font if CoreText cannot read it.
+pub(crate) fn bundled_font(woff: &'static [u8], size: f64, name: &str) -> Retained<NSFont> {
     // CTFontDescriptor and CTFont are toll-free bridged to NSFontDescriptor and NSFont, and both functions return +1.
     let font = unsafe {
         Retained::from_raw(CTFontManagerCreateFontDescriptorFromData(
-            &NSData::with_bytes(WOFF),
+            &NSData::with_bytes(woff),
         ))
         .and_then(|d| {
             Retained::from_raw(CTFontCreateWithFontDescriptor(&d, size, std::ptr::null()))
@@ -560,7 +568,8 @@ fn manrope(size: f64) -> Retained<NSFont> {
     };
     font.unwrap_or_else(|| {
         tracing::warn!(
-            "could not load the bundled Manrope; the pill falls back to the system font"
+            font = name,
+            "could not load a bundled font; falling back to the system font"
         );
         NSFont::systemFontOfSize_weight(size, unsafe { NSFontWeightSemibold })
     })

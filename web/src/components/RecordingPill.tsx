@@ -21,7 +21,11 @@ export function RecordingPill() {
   if (!data) return null;
   if (location.pathname === `/meeting/${data.id}`) return null;
 
-  const elapsedSec = Math.max(0, Math.floor((now - data.started_at) / 1000));
+  const paused = data.paused_since != null;
+  const elapsedSec = Math.max(
+    0,
+    Math.floor(((data.paused_since ?? now) - data.started_at) / 1000),
+  );
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, "0");
   const ss = String(elapsedSec % 60).padStart(2, "0");
 
@@ -29,12 +33,12 @@ export function RecordingPill() {
     <button
       type="button"
       onClick={() => navigate(`/meeting/${data.id}`)}
-      aria-label="Return to recording"
+      aria-label={paused ? "Return to paused recording" : "Return to recording"}
       className="flex items-center gap-2 px-3 py-1.5 bg-card border border-line rounded-full shadow-pop text-ui text-ink hover:border-straw transition-colors"
     >
       <span
         aria-hidden="true"
-        className="inline-block w-2 h-2 rounded-pill bg-straw animate-recpulse"
+        className={`inline-block w-2 h-2 rounded-pill ${paused ? "bg-mut" : "bg-straw animate-recpulse"}`}
       />
       <span className="font-medium truncate max-w-55">
         {data.title || "Recording"}

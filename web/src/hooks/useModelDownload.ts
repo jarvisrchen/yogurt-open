@@ -11,6 +11,7 @@ import {
   sttKeys,
 } from "../lib/api/stt";
 import { ensureSessionToken } from "../lib/session";
+import { flashTitle, reportFocus } from "../lib/pageFocus";
 import { importApi } from "../lib/api/granolaImport";
 import { applyImportEvent, applyImportStatus, type ImportEvent } from "./useGranolaImport";
 import { voiceKey, voiceTryKey } from "../lib/api/voice";
@@ -157,6 +158,7 @@ export function useModelDownloadEvents() {
     let cancelled = false;
     let ws: WebSocket | null = null;
     let retry: number | undefined;
+    let stopFocus: (() => void) | undefined;
     const onModelsChanged = () =>
       qc.invalidateQueries({ queryKey: sttKeys.models });
 
@@ -174,7 +176,10 @@ export function useModelDownloadEvents() {
       ws = new WebSocket(
         `${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`,
       );
+      const socket = ws;
       ws.onopen = () => {
+        stopFocus?.();
+        stopFocus = reportFocus(socket);
         importApi.status().then(applyImportStatus, () => {});
         slots.appSocket.forEach((l) => l.open(qc));
         if (!isReconnect) return;
@@ -201,6 +206,8 @@ export function useModelDownloadEvents() {
           qc.invalidateQueries({ queryKey: voiceKey });
         } else if (type === "voice_try") {
           qc.setQueryData(voiceTryKey, frame);
+        } else if (type === "bubble_return") {
+          flashTitle();
         }
         slots.appSocket.forEach((l) => l.frame(type, frame, qc));
       };
@@ -213,6 +220,7 @@ export function useModelDownloadEvents() {
     return () => {
       cancelled = true;
       window.clearTimeout(retry);
+      stopFocus?.();
       if (ws) {
         ws.onopen = null;
         ws.onmessage = null;

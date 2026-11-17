@@ -1,5 +1,6 @@
 import { useLabels } from "../../lib/api/labels";
 import { useEntitlements } from "../../lib/entitlements";
+import { ProChip } from "../ProChip";
 
 /** Mirrors `labels_max` in the server's limits, which is what refuses the create. */
 export const FREE_LABELS = 5;
@@ -24,9 +25,9 @@ export function LabelCap({ count, className = "" }: { count: number; className?:
           e.stopPropagation();
           window.open("https://yogurt-ai.dev", "_blank", "noreferrer");
         }}
-        className="text-blue hover:underline focus-visible:outline-2 focus-visible:outline-blue"
+        className="rounded-pill align-middle hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue"
       >
-        Get Pro for more
+        <ProChip>Get Pro for more</ProChip>
       </button>
     </p>
   );

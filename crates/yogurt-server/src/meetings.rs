@@ -183,6 +183,8 @@ pub struct Meeting {
     /// Wall-clock ms of the last chunk on either channel whose peak cleared
     /// [`SILENCE_PEAK`]. Reset to now on every start and by keep-recording.
     pub last_audible_ms: Arc<AtomicU64>,
+    /// Unix ms the recording was paused at, or 0 while it runs. Reset on every start.
+    pub paused_since_ms: Arc<AtomicU64>,
 }
 
 /// Abort a spawned task when the owner is dropped. Used so the STT session
@@ -217,6 +219,7 @@ impl Meeting {
             mic_muted: Mutex::new(false),
             mic_device: Mutex::new(String::new()),
             last_audible_ms: Arc::new(AtomicU64::new(now_ms())),
+            paused_since_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -352,6 +355,9 @@ impl Registry {
         if task_slot.is_some() {
             return Err(anyhow!("meeting already started"));
         }
+        m.paused_since_ms.store(0, Ordering::Relaxed);
+        // A new capture's mic starts unmuted, so a mute left from a stopped session must not show.
+        *m.mic_muted.lock().await = false;
 
         // select_stt probes the model file on disk (and may pay a
         // one-time legacy hash of a multi-GB file) - keep it off the
@@ -507,6 +513,8 @@ impl Registry {
         let events_tx = m.events_tx.clone();
         let last_audible = m.last_audible_ms.clone();
         last_audible.store(now_ms(), Ordering::Relaxed);
+        let paused = m.paused_since_ms.clone();
+        let clocks = Arc::new(AudioClocks::default());
         // STT subscribes BEFORE the adapter task starts publishing, so no
         // mic chunks are dropped on the wire before Deepgram's WS is ready.
         let audio_rx_for_stt = m.audio_tx.subscribe();
@@ -594,6 +602,7 @@ impl Registry {
                 raw_transcript_rx,
                 transcript_tx,
                 offset_ms,
+                clocks.clone(),
             )));
 
             // Spawn the STT engine first (so it subscribes before audio
@@ -618,7 +627,16 @@ impl Registry {
                 sys_status_rx,
                 events_tx.clone(),
             )));
-            pump_audio_adapter(mic_rx, sys_rx, audio_tx, events_tx, last_audible).await;
+            pump_audio_adapter(
+                mic_rx,
+                sys_rx,
+                audio_tx,
+                events_tx,
+                last_audible,
+                paused,
+                clocks,
+            )
+            .await;
             drop(status_guard);
             drop(stt_guard);
             drop(relay_guard);
@@ -808,6 +826,40 @@ impl Registry {
         }
     }
 
+    /// Pause or resume an actively recording meeting.
+    /// Capture keeps running so resume is instant, and the audio pump silences every frame meanwhile.
+    pub async fn set_paused(
+        &self,
+        id: &MeetingId,
+        paused: bool,
+    ) -> std::result::Result<(), SwitchDeviceError> {
+        self.set_paused_at(id, paused.then(now_ms)).await
+    }
+
+    /// [`Self::set_paused`] with the moment the pause began, which the bubble stamps at the click so its timer and the server's agree.
+    pub async fn set_paused_at(
+        &self,
+        id: &MeetingId,
+        paused_at_ms: Option<u64>,
+    ) -> std::result::Result<(), SwitchDeviceError> {
+        let m = self.get(id).await.ok_or(SwitchDeviceError::NotFound)?;
+        if m.audio_cmd_tx.lock().await.is_none() {
+            return Err(SwitchDeviceError::NotRecording);
+        }
+        if let Some(at) = paused_at_ms {
+            // A second pause keeps the first moment, so the frozen timer does not move.
+            let _ = m.paused_since_ms.compare_exchange(
+                0,
+                at.max(1),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        } else {
+            m.paused_since_ms.store(0, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// Run `f` against the live stream of an actively-recording meeting.
     pub async fn with_audio<R: Send + 'static>(
         &self,
@@ -886,12 +938,13 @@ async fn relay_transcript_events(
     mut raw_rx: broadcast::Receiver<TranscriptEvent>,
     tx: broadcast::Sender<TranscriptEvent>,
     offset_ms: u64,
+    clocks: Arc<AudioClocks>,
 ) {
     let mut dedupe = EchoDeduper::default();
     loop {
         match raw_rx.recv().await {
             Ok(mut ev) => {
-                ev.ts_ms += offset_ms;
+                ev.ts_ms = clocks.get(ev.channel).to_capture(ev.ts_ms) + offset_ms;
                 // ponytail: cross-channel TEXT dedupe, not echo cancellation.
                 // When machine audio plays, SCK captures it digitally
                 // (System) while the mic physically hears the speakers
@@ -1315,11 +1368,85 @@ pub(crate) fn peak_amplitude(samples: &[i16]) -> f32 {
 }
 
 /// Peak (0..1) above which a chunk counts as sound rather than room noise.
-pub const SILENCE_PEAK: f32 = 0.02;
+pub const SILENCE_PEAK: f32 = yogurt_voice::bubble::AUDIBLE_PEAK;
 
 fn note_audible(last_audible: &AtomicU64, peak: f32) {
     if peak > SILENCE_PEAK {
         last_audible.store(now_ms(), Ordering::Relaxed);
+    }
+}
+
+/// How long a pause sends silence before it sends nothing, so both engines close the utterance it cut off.
+/// Deepgram ends one after 1,000 ms of silence (`endpointing`) and the local segmenter after 600 ms.
+const PAUSE_FLUSH_MS: u64 = 1_500;
+
+/// The frame's peak, or `None` when a pause holds the frame back from STT, which Deepgram then does not bill.
+fn admit_frame(samples: &mut [i16], paused: &AtomicU64, last_audible: &AtomicU64) -> Option<f32> {
+    let paused_at = paused.load(Ordering::Relaxed);
+    if paused_at != 0 {
+        if now_ms().saturating_sub(paused_at) >= PAUSE_FLUSH_MS {
+            return None;
+        }
+        samples.fill(0);
+        return Some(0.0);
+    }
+    let peak = peak_amplitude(samples);
+    note_audible(last_audible, peak);
+    Some(peak)
+}
+
+/// Maps one channel's STT time back to capture time.
+/// Both engines stamp a line by how much audio they were sent, so every frame the pump holds back (a pause) or loses (a lag) would pull each later line earlier by its length.
+/// It counts those frames rather than reading frame stamps, which carry the capture callback's jitter and restart on a mic switch.
+#[derive(Debug, Default)]
+pub(crate) struct AudioClock {
+    sent_ms: u64,
+    held_ms: u64,
+    /// `(sent_ms where a gap ends, capture ms skipped up to there)`, both ascending.
+    gaps: Vec<(u64, u64)>,
+}
+
+impl AudioClock {
+    fn held(&mut self, len_ms: u64) {
+        self.held_ms += len_ms;
+    }
+
+    /// Notes a frame sent to STT and returns where it starts in STT time.
+    fn sent(&mut self, len_ms: u64) -> u64 {
+        if self.held_ms > 0 {
+            let skipped = self.gaps.last().map_or(0, |g| g.1) + std::mem::take(&mut self.held_ms);
+            self.gaps.push((self.sent_ms, skipped));
+        }
+        let at = self.sent_ms;
+        self.sent_ms += len_ms;
+        at
+    }
+
+    /// A line stamped `stt_ms` moves past every gap that ended at or before it, give or take [`GAP_SLACK_MS`].
+    fn to_capture(&self, stt_ms: u64) -> u64 {
+        let i = self.gaps.partition_point(|g| g.0 <= stt_ms + GAP_SLACK_MS);
+        stt_ms + i.checked_sub(1).map_or(0, |i| self.gaps[i].1)
+    }
+}
+
+/// The local segmenter stamps a line at the start of its 30 ms frame, so a line already underway at a resume can start up to 20 ms before the gap.
+/// The slack is safe for a pause, whose last 1.5 s before the gap are flush silence where no line starts.
+const GAP_SLACK_MS: u64 = 100;
+
+/// One [`AudioClock`] per channel, written by the audio pump and read by the transcript relay.
+#[derive(Debug, Default)]
+pub struct AudioClocks {
+    mic: std::sync::Mutex<AudioClock>,
+    system: std::sync::Mutex<AudioClock>,
+}
+
+impl AudioClocks {
+    fn get(&self, channel: Channel) -> std::sync::MutexGuard<'_, AudioClock> {
+        let m = match channel {
+            Channel::Mic => &self.mic,
+            Channel::System => &self.system,
+        };
+        m.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -1335,6 +1462,8 @@ pub async fn pump_audio_adapter(
     audio_tx: broadcast::Sender<AudioChunk>,
     events_tx: broadcast::Sender<serde_json::Value>,
     last_audible: Arc<AtomicU64>,
+    paused: Arc<AtomicU64>,
+    clocks: Arc<AudioClocks>,
 ) {
     let mut mic_open = true;
     let mut sys_open = true;
@@ -1346,21 +1475,19 @@ pub async fn pump_audio_adapter(
     while mic_open || sys_open {
         tokio::select! {
             res = mic_rx.recv(), if mic_open => match res {
-                Ok(frame) => {
-                    let peak = peak_amplitude(&frame.samples);
-                    note_audible(&last_audible, peak);
+                Ok(mut frame) => {
+                    let admitted = admit_frame(&mut frame.samples, &paused, &last_audible);
+                    let peak = admitted.unwrap_or(0.0);
+                    crate::bubble::level(true, peak, paused.load(Ordering::Relaxed) != 0);
                     maybe_emit_audio_level(&events_tx, &mut mic_last_emit, "mic", peak);
-                    let chunk = AudioChunk {
-                        channel: Channel::Mic,
-                        samples: frame.samples,
-                        ts_ms: frame.monotonic_micros / 1_000,
-                    };
-                    if audio_tx.send(chunk).is_err() {
-                        tracing::debug!("audio adapter: no receivers, terminating");
+                    if admitted.is_none() {
+                        clocks.get(Channel::Mic).held(frame_ms(&frame.samples));
+                    } else if !forward(&audio_tx, &clocks, Channel::Mic, frame) {
                         return;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
+                    clocks.get(Channel::Mic).held(n * LAGGED_FRAME_MS);
                     // CLI-2: debug, not warn. This fires as a burst while the
                     // STT engine loads its model and the ring buffer catches
                     // up, which is every single meeting - a warning nobody can
@@ -1376,21 +1503,19 @@ pub async fn pump_audio_adapter(
                 }
             },
             res = sys_rx.recv(), if sys_open => match res {
-                Ok(frame) => {
-                    let peak = peak_amplitude(&frame.samples);
-                    note_audible(&last_audible, peak);
+                Ok(mut frame) => {
+                    let admitted = admit_frame(&mut frame.samples, &paused, &last_audible);
+                    let peak = admitted.unwrap_or(0.0);
+                    crate::bubble::level(false, peak, paused.load(Ordering::Relaxed) != 0);
                     maybe_emit_audio_level(&events_tx, &mut sys_last_emit, "system", peak);
-                    let chunk = AudioChunk {
-                        channel: Channel::System,
-                        samples: frame.samples,
-                        ts_ms: frame.monotonic_micros / 1_000,
-                    };
-                    if audio_tx.send(chunk).is_err() {
-                        tracing::debug!("audio adapter: no receivers, terminating");
+                    if admitted.is_none() {
+                        clocks.get(Channel::System).held(frame_ms(&frame.samples));
+                    } else if !forward(&audio_tx, &clocks, Channel::System, frame) {
                         return;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
+                    clocks.get(Channel::System).held(n * LAGGED_FRAME_MS);
                     // Startup bursts stay at debug (CLI-2). Lag past the first
                     // 30 s is sustained, so warn, at most once per 30 s.
                     sys_lagged += n;
@@ -1413,9 +1538,37 @@ pub async fn pump_audio_adapter(
     tracing::debug!("audio adapter: both channels closed, terminating");
 }
 
+fn frame_ms(samples: &[i16]) -> u64 {
+    samples.len() as u64 * 1_000 / u64::from(yogurt_audio::SAMPLE_RATE_HZ)
+}
+
+/// Frames a lagging receiver lost, which [`AudioClock`] counts as held back.
+const LAGGED_FRAME_MS: u64 =
+    yogurt_audio::FRAME_SAMPLES as u64 * 1_000 / yogurt_audio::SAMPLE_RATE_HZ as u64;
+
+/// Send one frame to STT and note it on its channel's clock. `false` once STT has gone.
+fn forward(
+    audio_tx: &broadcast::Sender<AudioChunk>,
+    clocks: &AudioClocks,
+    channel: Channel,
+    frame: yogurt_audio::Frame,
+) -> bool {
+    let ts_ms = clocks.get(channel).sent(frame_ms(&frame.samples));
+    let chunk = AudioChunk {
+        channel,
+        samples: frame.samples,
+        ts_ms,
+    };
+    if audio_tx.send(chunk).is_err() {
+        tracing::debug!("audio adapter: no receivers, terminating");
+        return false;
+    }
+    true
+}
+
 const SYS_LAG_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1633,6 +1786,8 @@ mod tests {
             audio_tx,
             events_tx,
             Default::default(),
+            Default::default(),
+            Default::default(),
         ));
 
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -1680,6 +1835,8 @@ mod tests {
             audio_tx,
             events_tx,
             Default::default(),
+            Default::default(),
+            Default::default(),
         ));
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
@@ -1696,7 +1853,7 @@ mod tests {
             .expect("chunk within 500ms")
             .expect("recv ok");
         assert_eq!(chunk.channel, Channel::System);
-        assert_eq!(chunk.ts_ms, 5);
+        assert_eq!(chunk.ts_ms, 0, "stamped in STT time");
 
         drop(sys_tx);
         tokio::time::timeout(std::time::Duration::from_secs(1), pump)
@@ -1712,6 +1869,117 @@ mod tests {
         assert_eq!(last.load(Ordering::Relaxed), 0);
         note_audible(&last, peak_amplitude(&[0, -2000]));
         assert!(last.load(Ordering::Relaxed) > 0);
+    }
+
+    /// A pause sends silence for its first moments, so the cut-off utterance ends, then sends nothing, so Deepgram bills nothing.
+    /// After resume the clock carries the held-back time, so later lines keep their place on the capture clock.
+    #[tokio::test]
+    async fn a_paused_pump_flushes_silence_then_holds_frames_back() {
+        let (mic_tx, mic_rx) = broadcast::channel::<yogurt_audio::Frame>(16);
+        let (_sys_tx, sys_rx) = broadcast::channel::<yogurt_audio::Frame>(16);
+        let (audio_tx, mut audio_rx) = broadcast::channel::<AudioChunk>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<serde_json::Value>(16);
+        let last_audible = Arc::new(AtomicU64::new(0));
+        let paused = Arc::new(AtomicU64::new(now_ms()));
+        let clocks = Arc::new(AudioClocks::default());
+        let _pump = tokio::spawn(pump_audio_adapter(
+            mic_rx,
+            sys_rx,
+            audio_tx,
+            events_tx,
+            last_audible.clone(),
+            paused.clone(),
+            clocks.clone(),
+        ));
+        let speech = |ms: u64| yogurt_audio::Frame {
+            channel: yogurt_audio::Channel::Mic,
+            samples: vec![16384i16; 320],
+            monotonic_micros: ms * 1_000,
+        };
+        async fn next(rx: &mut broadcast::Receiver<AudioChunk>) -> AudioChunk {
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("chunk within 1 s")
+                .expect("recv ok")
+        }
+
+        mic_tx.send(speech(0)).unwrap();
+        let chunk = next(&mut audio_rx).await;
+        assert_eq!(chunk.ts_ms, 0);
+        assert!(
+            chunk.samples.iter().all(|&s| s == 0),
+            "a fresh pause sends silence"
+        );
+        assert_eq!(
+            last_audible.load(Ordering::Relaxed),
+            0,
+            "silenced audio is never audible"
+        );
+
+        paused.store(now_ms() - PAUSE_FLUSH_MS, Ordering::Relaxed);
+        mic_tx.send(speech(20)).unwrap();
+        mic_tx.send(speech(40)).unwrap();
+        // The pump runs on this test's thread, so the sleep lets it take both frames while still paused.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        paused.store(0, Ordering::Relaxed);
+        mic_tx.send(speech(60)).unwrap();
+        let chunk = next(&mut audio_rx).await;
+        assert_eq!(chunk.ts_ms, 20, "the held-back frames never reach STT");
+        assert_eq!(chunk.samples[0], 16384, "audio flows again after resume");
+        let clock = clocks.get(Channel::Mic);
+        assert_eq!(
+            clock.to_capture(20),
+            60,
+            "STT's 20 ms is the frame captured at 60 ms"
+        );
+    }
+
+    #[test]
+    fn audio_clock_moves_each_line_past_the_gaps_before_it() {
+        let mut clock = AudioClock::default();
+        for _ in 0..100 {
+            clock.sent(20);
+        }
+        clock.held(10_000); // a 10 s pause
+        assert_eq!(
+            clock.sent(20),
+            2_000,
+            "a frame's place in STT time skips nothing"
+        );
+        for _ in 0..99 {
+            clock.sent(20);
+        }
+        clock.held(40); // two frames lost to lag
+        clock.sent(20);
+        assert_eq!(clock.to_capture(0), 0);
+        assert_eq!(clock.to_capture(1_800), 1_800);
+        assert_eq!(
+            clock.to_capture(1_980),
+            11_980,
+            "a line the segmenter starts in the frame that straddles the resume"
+        );
+        assert_eq!(clock.to_capture(2_000), 12_000);
+        assert_eq!(clock.to_capture(3_800), 13_800);
+        assert_eq!(clock.to_capture(4_000), 14_040);
+    }
+
+    #[tokio::test]
+    async fn relay_stamps_lines_on_the_capture_clock() {
+        let clocks = Arc::new(AudioClocks::default());
+        clocks.get(Channel::Mic).sent(20);
+        clocks.get(Channel::Mic).held(4_980);
+        clocks.get(Channel::Mic).sent(20);
+        let (raw_tx, raw_rx) = broadcast::channel(8);
+        let (tx, mut rx) = broadcast::channel(8);
+        let _relay = tokio::spawn(relay_transcript_events(raw_rx, tx, 1_000, clocks));
+        raw_tx
+            .send(ev(20, Channel::Mic, "after the pause", true))
+            .unwrap();
+        raw_tx
+            .send(ev(20, Channel::System, "never paused", true))
+            .unwrap();
+        assert_eq!(rx.recv().await.unwrap().ts_ms, 6_000);
+        assert_eq!(rx.recv().await.unwrap().ts_ms, 1_020);
     }
 
     /// Sanity: pump exits cleanly when BOTH channels close from the start.
@@ -1730,6 +1998,8 @@ mod tests {
             sys_rx,
             audio_tx,
             events_tx,
+            Default::default(),
+            Default::default(),
             Default::default(),
         ));
         tokio::time::timeout(std::time::Duration::from_secs(1), pump)
@@ -1756,6 +2026,8 @@ mod tests {
             sys_rx,
             audio_tx,
             events_tx,
+            Default::default(),
+            Default::default(),
             Default::default(),
         ));
 

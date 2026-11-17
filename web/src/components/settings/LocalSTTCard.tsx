@@ -8,7 +8,7 @@ import {
   useModelDownload,
 } from "../../hooks/useModelDownload";
 import { ModelPicker } from "./ModelPicker";
-import { PARAKEET_CREDIT, RECOMMENDED_MODEL } from "./modelTypes";
+import { PARAKEET_CREDITS, RECOMMENDED_MODEL } from "./modelTypes";
 import { TestKeyButton } from "./TestKeyButton";
 import { Button } from "../Button";
 import { Pill } from "../Pill";
@@ -159,7 +159,11 @@ export function LocalSTTCard({
         </p>
       )}
 
-      <p className="text-meta text-mut pt-1">{PARAKEET_CREDIT}</p>
+      <div className="text-meta text-mut pt-1 space-y-1">
+        {Object.values(PARAKEET_CREDITS).map((credit) => (
+          <p key={credit}>{credit}</p>
+        ))}
+      </div>
       <p className="text-meta text-mut">
         Models download on first use · stored in{" "}
         <code className="font-mono text-ink">~/.yogurt/models/</code>

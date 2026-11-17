@@ -177,7 +177,8 @@ pub async fn ws_handler(
     }
     // Subscribe before the upgrade so the receiver exists before the first frame.
     let app_rx = state.app_events_tx.subscribe();
-    ws.on_upgrade(move |socket| handle_socket(socket, app_rx))
+    let bubble = state.bubble.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, app_rx, bubble))
 }
 
 /// Returns a 403 response on any auth failure.
@@ -236,11 +237,54 @@ pub fn redact_token_in_uri(uri: &str) -> String {
     out
 }
 
+/// This socket's page focus, counted while it is held, so every way out of [`handle_socket`] takes it back.
+/// A socket counts as a page from its first `page_focus` frame, which `yogurt ctl` sockets never send.
+struct PageFocus {
+    shared: std::sync::Arc<crate::bubble::BubbleShared>,
+    page: bool,
+    focused: bool,
+}
+
+impl PageFocus {
+    fn set(&mut self, focused: bool) {
+        if !self.page {
+            self.page = true;
+            self.shared.page_opened();
+        }
+        self.shared.page_focus(self.focused, focused);
+        if focused && !self.focused {
+            crate::bubble::page_focused();
+        }
+        self.focused = focused;
+    }
+}
+
+impl Drop for PageFocus {
+    fn drop(&mut self) {
+        if self.page {
+            self.shared.page_focus(self.focused, false);
+            self.shared.page_closed();
+        }
+    }
+}
+
+/// `{"type":"page_focus","focused":bool}`, which every page sends on connect and whenever its focus or visibility changes.
+fn page_focus(text: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    (v.get("type")?.as_str()? == "page_focus").then(|| v.get("focused")?.as_bool())?
+}
+
 /// Echoes inbound text and forwards `AppState::app_events_tx` broadcasts as Text frames.
 async fn handle_socket(
     mut socket: WebSocket,
     mut app_rx: tokio::sync::broadcast::Receiver<serde_json::Value>,
+    bubble: std::sync::Arc<crate::bubble::BubbleShared>,
 ) {
+    let mut focus = PageFocus {
+        shared: bubble,
+        page: false,
+        focused: false,
+    };
     loop {
         tokio::select! {
             ev = app_rx.recv() => match ev {
@@ -269,7 +313,9 @@ async fn handle_socket(
                 None => return,
                 Some(Err(_)) => return,
                 Some(Ok(Message::Text(t))) => {
-                    if socket.send(Message::Text(t)).await.is_err() {
+                    if let Some(focused) = page_focus(&t) {
+                        focus.set(focused);
+                    } else if socket.send(Message::Text(t)).await.is_err() {
                         return;
                     }
                 }
@@ -437,6 +483,47 @@ async fn handle_meeting_socket(mut socket: WebSocket, id: Uuid, state: AppState)
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn page_focus_frames_parse_and_a_closed_socket_gives_its_focus_back() {
+        assert_eq!(
+            page_focus(r#"{"type":"page_focus","focused":true}"#),
+            Some(true)
+        );
+        assert_eq!(
+            page_focus(r#"{"type":"page_focus","focused":false}"#),
+            Some(false)
+        );
+        assert_eq!(page_focus(r#"{"type":"page_focus"}"#), None);
+        assert_eq!(page_focus(r#"{"type":"ping"}"#), None);
+        assert_eq!(page_focus("hello"), None);
+
+        let shared = std::sync::Arc::new(crate::bubble::BubbleShared::default());
+        let silent = PageFocus {
+            shared: shared.clone(),
+            page: false,
+            focused: false,
+        };
+        assert!(
+            !shared.has_pages(),
+            "a socket that never reports focus, such as yogurt ctl's, is no page"
+        );
+        drop(silent);
+        assert!(!shared.has_pages());
+
+        let mut focus = PageFocus {
+            shared: shared.clone(),
+            page: false,
+            focused: false,
+        };
+        focus.set(true);
+        assert!(shared.has_pages());
+        assert!(!shared.wanted(true, true));
+        drop(focus);
+        assert!(shared.wanted(true, true));
+        assert!(!shared.has_pages());
+    }
+
     use super::*;
 
     #[test]

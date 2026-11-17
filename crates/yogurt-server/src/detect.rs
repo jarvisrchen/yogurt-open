@@ -406,8 +406,10 @@ pub async fn silence_tick(state: &AppState, now_ms: u64, policy: SilencePolicy) 
     let Some(m) = state.meetings.get(&id).await else {
         return;
     };
-    if !enabled {
-        // Silence from while the setting was off must not count once it is on.
+    // A pause can send no frames at all (a muted mic, a system channel with nothing playing), so it is exempt here rather than in the pump.
+    let paused = m.paused_since_ms.load(std::sync::atomic::Ordering::Relaxed) != 0;
+    if !enabled || paused {
+        // Silence from while the setting was off or the meeting was paused must not count once it counts again.
         m.last_audible_ms
             .store(now_ms, std::sync::atomic::Ordering::Relaxed);
         return;
@@ -622,6 +624,84 @@ mod tests {
         yogurt_db::settings::set(&state.db, AUTO_STOP_SETTING_KEY, "false").unwrap();
         silence_tick(&state, u64::MAX / 2, POLICY).await;
         assert_eq!(state.meetings.active_recording().await, Some(id));
+    }
+
+    #[tokio::test]
+    async fn silence_never_stops_a_paused_meeting_and_resume_gets_a_full_window() {
+        let (state, id, _tmp) = recording_state().await;
+        let m = state.meetings.get(&id).await.unwrap();
+        let at = std::sync::atomic::Ordering::Relaxed;
+        let last = m.last_audible_ms.load(at);
+        m.paused_since_ms.store(last, at);
+        silence_tick(&state, last + 600_000, POLICY).await;
+        assert_eq!(state.meetings.active_recording().await, Some(id));
+
+        m.paused_since_ms.store(0, at);
+        silence_tick(&state, last + 600_001, POLICY).await;
+        assert_eq!(state.meetings.active_recording().await, Some(id));
+    }
+
+    async fn active_json(state: &AppState) -> serde_json::Value {
+        use axum::response::IntoResponse;
+        let resp = crate::routes::active_recording(axum::extract::State(state.clone()))
+            .await
+            .into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pause_keeps_its_first_moment_reports_it_and_a_restart_clears_it_and_the_mute() {
+        let (state, id, _tmp) = recording_state().await;
+        let m = state.meetings.get(&id).await.unwrap();
+        *m.audio_cmd_tx.lock().await = Some(tokio::sync::mpsc::channel(1).0);
+        assert_eq!(
+            active_json(&state).await["paused_since"],
+            serde_json::Value::Null
+        );
+
+        state.meetings.set_paused(&id, true).await.unwrap();
+        let since = active_json(&state).await["paused_since"]
+            .as_u64()
+            .expect("paused");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        state.meetings.set_paused(&id, true).await.unwrap();
+        assert_eq!(
+            active_json(&state).await["paused_since"].as_u64(),
+            Some(since)
+        );
+
+        state.meetings.set_paused(&id, false).await.unwrap();
+        assert_eq!(
+            active_json(&state).await["paused_since"],
+            serde_json::Value::Null
+        );
+
+        state.meetings.set_paused(&id, true).await.unwrap();
+        *m.mic_muted.lock().await = true;
+        state.meetings.stop(&id).await.unwrap();
+        assert!(matches!(
+            state.meetings.set_paused(&id, false).await,
+            Err(crate::meetings::SwitchDeviceError::NotRecording)
+        ));
+        // Settings that fail to select an engine still pass the point where a start clears the pause and the mute.
+        let bad = crate::meetings::SttSettings {
+            stt_provider: "cloud".into(),
+            stt_model: String::new(),
+            deepgram_api_key: None,
+            words: Vec::new(),
+        };
+        assert!(state.meetings.start(&id, bad, None, None).await.is_err());
+        assert_eq!(
+            m.paused_since_ms.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(
+            !*m.mic_muted.lock().await,
+            "a new start clears a leftover mute too"
+        );
     }
 
     #[tokio::test]

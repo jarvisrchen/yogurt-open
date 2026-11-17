@@ -73,9 +73,9 @@ export function VoiceSection({
       general.voice_enabled || q.state.data?.accessibility === "missing" ? 2_000 : false,
   });
   const v = status.data;
-  const model = voiceModel(general);
   // The models list does not poll, so a model fetched elsewhere would read missing while Voice already runs on it.
   const models = useModels();
+  const model = voiceModel(general, models.data);
   const missingModel = v?.running ? undefined : models.data?.find((m) => m.name === model && !m.downloaded);
   // "off" means the voice task has not yet seen Voice turned on.
   const stalled =
@@ -291,7 +291,7 @@ function StatePill({
   status: VoiceStatus;
   stalled: boolean;
   missing: boolean;
-  sttModel: string;
+  sttModel: string | undefined;
 }) {
   if (status.accessibility === "missing") {
     return (
@@ -317,7 +317,7 @@ function StatePill({
   // Voice picks its own engine, whatever `stt_provider` says.
   return (
     <Pill tone="blue" className="ml-1">
-      {sttModel === VOICE_STT_DEEPGRAM ? "On · Deepgram" : `On · local ${sttModel}`}
+      {sttModel === VOICE_STT_DEEPGRAM ? "On · Deepgram" : sttModel ? `On · local ${sttModel}` : "On"}
     </Pill>
   );
 }

@@ -7,6 +7,7 @@ interface Props {
   meetings: ReadonlyArray<MeetingSummary>;
   now?: Date;
   activeId?: string | null;
+  livePaused?: boolean;
   selectionActive?: boolean;
   selectedIds?: ReadonlySet<string>;
   onToggleSelect?: (id: string, shiftKey: boolean) => void;
@@ -17,6 +18,7 @@ export function DateGroup({
   meetings,
   now = new Date(),
   activeId,
+  livePaused,
   selectionActive,
   selectedIds,
   onToggleSelect,
@@ -36,6 +38,7 @@ export function DateGroup({
                 <MeetingCard
                   meeting={m}
                   activeId={activeId}
+                  livePaused={livePaused}
                   selectionActive={selectionActive}
                   selected={selectedIds?.has(m.id) ?? false}
                   onToggleSelect={onToggleSelect}

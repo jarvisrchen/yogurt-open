@@ -231,7 +231,7 @@ async fn patch_settings(
             } else {
                 "Voice"
             };
-            ensure_downloaded(g.voice_model().to_string(), page).await?;
+            ensure_downloaded(crate::voice::voice_model(&g).await, page).await?;
         }
     }
     // The cleanup keys too, so the built-in model loads or frees its memory now rather than at the next poll.

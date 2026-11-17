@@ -788,6 +788,7 @@ fn build_test_state(
         detect: Default::default(),
         import: Default::default(),
         voice: Default::default(),
+        bubble: Default::default(),
         pro: yogurt_server::entitlements::hooks(),
     };
     (state, token_str, tmp)

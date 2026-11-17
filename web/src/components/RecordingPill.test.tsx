@@ -4,7 +4,9 @@ import "@testing-library/jest-dom/vitest";
 import { MemoryRouter, Routes, Route } from "react-router";
 
 const state = vi.hoisted(() => ({
-  active: null as { id: string; title: string; started_at: number } | null,
+  active: null as
+    | { id: string; title: string; started_at: number; paused_since?: number | null }
+    | null,
 }));
 
 vi.mock("../lib/api/meetings", () => ({
@@ -51,6 +53,21 @@ describe("RecordingPill", () => {
 
     fireEvent.click(btn);
     expect(navigateSpy).toHaveBeenCalledWith("/meeting/abc-123");
+  });
+
+  it("holds the timer at the pause and stops the pulse while paused", () => {
+    const now = Date.now();
+    state.active = {
+      id: "abc-123",
+      title: "Standup",
+      started_at: now - 600_000,
+      paused_since: now - 300_000,
+    };
+    renderAt("/");
+
+    const btn = screen.getByRole("button", { name: "Return to paused recording" });
+    expect(btn).toHaveTextContent("05:00");
+    expect(btn.querySelector(".animate-recpulse")).toBeNull();
   });
 
   it("falls back to 'Recording' when the title is empty", () => {

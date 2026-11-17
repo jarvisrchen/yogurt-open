@@ -246,6 +246,9 @@ async fn no_subcommand_reveals_or_sets_a_key_or_token() {
         vec!["ctl", "meeting", "mute", "--help"],
         vec!["ctl", "meeting", "mute", "on", "--help"],
         vec!["ctl", "meeting", "mute", "off", "--help"],
+        vec!["ctl", "meeting", "pause", "--help"],
+        vec!["ctl", "meeting", "pause", "on", "--help"],
+        vec!["ctl", "meeting", "pause", "off", "--help"],
         vec!["ctl", "meeting", "search", "--help"],
         vec!["ctl", "meeting", "delete", "--help"],
         vec!["ctl", "detect", "--help"],
@@ -1127,6 +1130,8 @@ async fn meeting_mute_against_a_non_recording_meeting_fails_cleanly() {
     for args in [
         vec!["meeting", "mute", "on", "last"],
         vec!["meeting", "mute", "off", "last"],
+        vec!["meeting", "pause", "on", "last"],
+        vec!["meeting", "pause", "off", "last"],
     ] {
         let output = ctl(port, tmp.path(), &args).failure();
         let stdout = stdout_of(&output);
@@ -1141,11 +1146,16 @@ async fn meeting_mute_with_no_meeting_given_and_nothing_recording_fails_cleanly(
     let tmp = tempfile::tempdir().expect("tempdir");
     let (_guard, port) = spawn_server(tmp.path()).await;
 
-    let output = ctl(port, tmp.path(), &["meeting", "mute", "on"]).failure();
-    let stdout = stdout_of(&output);
-    assert_eq!(output.get_output().status.code(), Some(1));
-    assert!(stdout.contains("error:"), "got:\n{stdout}");
-    assert!(stdout.contains("no active meeting"), "got:\n{stdout}");
+    for verb in ["mute", "pause"] {
+        let output = ctl(port, tmp.path(), &["meeting", verb, "on"]).failure();
+        let stdout = stdout_of(&output);
+        assert_eq!(output.get_output().status.code(), Some(1));
+        assert!(stdout.contains("error:"), "got:\n{stdout}");
+        assert!(
+            stdout.contains(&format!("no active meeting to {verb}")),
+            "got:\n{stdout}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -118,6 +118,7 @@ pub async fn run_with_mock_llm(
         detect: Default::default(),
         import: Default::default(),
         voice: Default::default(),
+        bubble: Default::default(),
         pro: crate::entitlements::hooks(),
     };
 

@@ -218,7 +218,7 @@ async fn patch_to_local_with_undownloaded_model_is_rejected_and_settings_unchang
         .await
         .unwrap();
     assert_eq!(after["general"]["stt_provider"], "cloud");
-    assert_eq!(after["general"]["stt_model"], "parakeet-v3");
+    assert_eq!(after["general"]["stt_model"], "parakeet-ultra");
 }
 
 #[tokio::test]

@@ -105,7 +105,9 @@ export function Library({ starredOnly = false, archivedOnly = false }: LibraryPr
   const counted = isFiltered ? everything : list;
   const totalMeetings = counted.data?.total ?? (counted.isLoading ? undefined : 0);
   // One poll for the whole list, not one per card.
-  const activeId = useActiveRecording().data?.id ?? null;
+  const active = useActiveRecording().data;
+  const activeId = active?.id ?? null;
+  const livePaused = active?.paused_since != null;
 
   // Back, or a Library link back here, lands where the list was left once its rows are in, since they may still be loading.
   // A first load of the tab (key "default") is neither, and Back with no spot of ours is left to ScrollRestoration.
@@ -240,6 +242,7 @@ export function Library({ starredOnly = false, archivedOnly = false }: LibraryPr
             <DateGroup
               meetings={meetings}
               activeId={activeId}
+              livePaused={livePaused}
               selectionActive={hasSelection}
               selectedIds={selection.selected}
               onToggleSelect={onToggleSelect}

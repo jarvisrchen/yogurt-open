@@ -70,3 +70,7 @@ required-features = ["local-stt"]
 [[example]]
 name = "initial_prompt_cost"
 required-features = ["local-stt"]
+
+[[example]]
+name = "stt_eval"
+required-features = ["local-stt"]

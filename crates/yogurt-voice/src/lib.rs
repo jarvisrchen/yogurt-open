@@ -1,5 +1,8 @@
-//! macOS glue for Yogurt Voice. It knows nothing about audio, STT, or settings storage.
+//! macOS glue for Yogurt Voice and the meeting bubble. It knows nothing about audio, STT, or settings storage.
 
+pub mod bubble;
+#[cfg(target_os = "macos")]
+mod bubble_panel;
 pub mod gesture;
 pub mod hotkey;
 #[cfg(target_os = "macos")]

@@ -44,12 +44,13 @@ The times are from release to text on an M3 Max with 64 GB.
 
 | Model | Runs | Time | Notes |
 | --- | --- | --- | --- |
-| Parakeet v3 (default) | On your Mac, CPU | 206 ms for an 11-second, 45-word clip | Stays fast while a meeting uses the GPU |
+| Parakeet Ultra (default) | On your Mac, CPU | About the same as v3 (see [the eval](.planning/2026-11-15-parakeet-ultra-eval.md)) | Fewer errors than v3, most of all in noise. Until it is downloaded, a Mac with v3 keeps using v3 |
+| Parakeet v3 | On your Mac, CPU | 206 ms for an 11-second, 45-word clip | Stays fast while a meeting uses the GPU |
 | small.en, tiny.en, large-v3-turbo | On your Mac | 409 ms for small.en on the same clip | The local whisper models from [Transcription models](../README.md#transcription-models) |
 | Same as meetings | On your Mac | | Follows whichever local model **Settings -> Transcription** uses |
 | Deepgram | Deepgram's API | 162 to 208 ms on clips of 2 to 31 seconds | Uses the key and model from **Settings -> Transcription**, and streams while you hold the hotkey |
 
-If Deepgram fails or has not answered 2 seconds after you let go, Voice transcribes the clip with Parakeet instead, when it is downloaded.
+If Deepgram fails or has not answered 2 seconds after you let go, Voice transcribes the clip with the default Parakeet instead, when it is downloaded.
 Once you have dictated with a model, the picker also shows its average on your Mac, worked out from the dictations history keeps.
 
 ## Cleanup

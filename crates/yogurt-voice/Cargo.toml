@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "macOS glue for Yogurt Voice: the hotkey event tap, the paste, and the AppKit main loop."
+description = "macOS glue for Yogurt Voice and the meeting bubble: the hotkey event tap, the paste, the two panels, and the AppKit main loop."
 
 [dependencies]
 thiserror = { workspace = true }
@@ -13,10 +13,11 @@ tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSEnumerator", "NSGeometry", "NSString", "NSValue"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-quartz-core", "NSAnimation", "NSAnimationContext", "NSAppearance", "NSApplication", "NSColor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSAttributedString", "NSData", "NSDictionary", "NSEnumerator", "NSGeometry", "NSKeyValueCoding", "NSString", "NSURL", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "objc2-quartz-core", "NSAccessibility", "NSAnimation", "NSAnimationContext", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSColor", "NSCursor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics", "NSImage", "NSPanel", "NSParagraphStyle", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStringDrawing", "NSText", "NSTrackingArea", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFMachPort", "CFRunLoop"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColor", "CGEvent", "CGEventTypes", "CGPath", "CGRemoteOperation"] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CAAnimation", "CABase", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CAShapeLayer", "CATextLayer", "CATransaction"] }
+block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "block2", "objc2"] }
 

@@ -92,6 +92,15 @@ pub trait ProHooks: std::any::Any + Send + Sync {
         vec![]
     }
 
+    /// The meeting bubble's Pro part: the live recap's newest bullets and the lemon edge. `None` leaves the card to the transcript.
+    fn bubble_card(
+        &self,
+        _state: &AppState,
+        _m: &Meeting,
+    ) -> Option<yogurt_voice::bubble::ProCard> {
+        None
+    }
+
     /// The Voice dictionary that meeting and dictation transcription hear and dictations are respelled by.
     ///
     /// **Blocking:** async callers wrap it in `tokio::task::spawn_blocking`.

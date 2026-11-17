@@ -153,3 +153,66 @@ async fn it_emits_overload_status_when_backpressured() {
     adapter.abort();
     server.abort();
 }
+
+/// Deepgram's times restart at 0 on every socket, so a line on a reconnected socket counts from the STT time of that socket's first chunk.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reconnected_socket_stamps_lines_from_its_first_chunk() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    // Accepted in order: mic, system, then the mic's reconnect.
+    let server = tokio::spawn(async move {
+        for n in 0..3 {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let (mut write, mut read) = ws.split();
+                while let Some(Ok(msg)) = read.next().await {
+                    if !msg.is_binary() || n == 1 {
+                        continue;
+                    }
+                    if n == 0 {
+                        let _ = write.close().await;
+                        return;
+                    }
+                    let frame = r#"{"type":"Results","channel":{"alternatives":[{"transcript":"after the reconnect","confidence":0.9}]},"is_final":true,"speech_final":true,"start":1.0}"#;
+                    let _ = write
+                        .send(tokio_tungstenite::tungstenite::Message::Text(frame.into()))
+                        .await;
+                }
+            });
+        }
+    });
+
+    let (audio_tx, audio_rx) = tokio::sync::broadcast::channel::<AudioChunk>(16);
+    let (txn_tx, mut txn_rx) = tokio::sync::broadcast::channel::<TranscriptEvent>(16);
+    let mut stt = DeepgramStt::new("fake-key");
+    stt.base_url = format!("ws://127.0.0.1:{port}");
+    let adapter = tokio::spawn(async move { stt.start(audio_rx, txn_tx, &[]).await.ok() });
+
+    let mic = |ts_ms| AudioChunk {
+        channel: Channel::Mic,
+        samples: vec![0; 320],
+        ts_ms,
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    audio_tx.send(mic(0)).unwrap();
+    // The first reconnect waits 1 s.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    audio_tx.send(mic(5_000)).unwrap();
+
+    let ev = loop {
+        let ev = tokio::time::timeout(Duration::from_secs(3), txn_rx.recv())
+            .await
+            .expect("a line within 3 s")
+            .unwrap();
+        if !ev.text.starts_with("[stt") {
+            break ev;
+        }
+    };
+    assert_eq!(ev.text, "after the reconnect");
+    assert_eq!(ev.ts_ms, 6_000);
+
+    adapter.abort();
+    server.abort();
+}

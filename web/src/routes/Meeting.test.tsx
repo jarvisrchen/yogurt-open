@@ -60,6 +60,7 @@ const state = vi.hoisted(() => ({
     started_at: number;
     stt?: "cloud" | "local";
     auto_stop_at?: number | null;
+    paused_since?: number | null;
   } | null,
 }));
 
@@ -165,7 +166,7 @@ describe("Meeting — auto-start on '+ New meeting'", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument();
     });
     expect(
@@ -270,7 +271,7 @@ describe("Meeting — End meeting flow", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument();
     });
 
@@ -295,6 +296,43 @@ describe("Meeting — End meeting flow", () => {
     expect(navState).toMatchObject({
       autoEnhance: { notes_md: "", title: "Weekly sync" },
     });
+
+    vi.unstubAllGlobals();
+  });
+
+  it("stays on the page with the error when End meeting's stop fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/meetings/meeting-3/start") {
+          return new Response(JSON.stringify({ status: "started" }), { status: 200 });
+        }
+        if (url === "/api/meetings/meeting-3/stop") {
+          return new Response(JSON.stringify({ error: "capture is wedged" }), { status: 500 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    renderAt("/meeting/meeting-3");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^start recording$/i })).toBeInTheDocument();
+    });
+    act(() => {
+      screen.getByRole("button", { name: /^start recording$/i }).click();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /^pause$/i })).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      screen.getByTestId("end-meeting").click();
+    });
+
+    await waitFor(() => expect(screen.getByText(/capture is wedged/)).toBeInTheDocument());
+    expect(screen.queryByTestId("post-view")).toBeNull();
+    expect(screen.getByTestId("end-meeting")).not.toBeDisabled();
 
     vi.unstubAllGlobals();
   });
@@ -329,7 +367,7 @@ describe("Meeting — End meeting flow", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument();
     });
 
@@ -393,7 +431,7 @@ describe("Meeting — recovers recording state on return", () => {
     vi.clearAllMocks();
   });
 
-  it("shows Stop recording (not Start) when GET /api/meetings/active reports this meeting live, without POSTing /start again", async () => {
+  it("shows Pause (not Start) when GET /api/meetings/active reports this meeting live, without POSTing /start again", async () => {
     state.activeRecording = {
       id: "meeting-live",
       title: "Weekly sync",
@@ -408,7 +446,7 @@ describe("Meeting — recovers recording state on return", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument();
     });
     expect(
@@ -418,6 +456,28 @@ describe("Meeting — recovers recording state on return", () => {
       fetchMock.mock.calls.some((c) => String(c[0]).endsWith("/start")),
     ).toBe(false);
     expect(screen.queryByTestId("stt-error-banner")).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("shows Resume and a still grey dot when the live recording is paused", async () => {
+    state.activeRecording = {
+      id: "meeting-live",
+      title: "Weekly sync",
+      started_at: Date.now() - 60_000,
+      paused_since: Date.now() - 30_000,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`unexpected fetch: ${String(input)}`);
+    }));
+
+    const { container } = renderAt("/meeting/meeting-live");
+
+    expect(await screen.findByRole("button", { name: "Resume" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    const dot = container.querySelector('[title="paused"]');
+    expect(dot).not.toBeNull();
+    expect(dot).not.toHaveClass("animate-recpulse");
 
     vi.unstubAllGlobals();
   });
@@ -486,7 +546,7 @@ describe("Meeting — recovers recording state on return", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument();
     });
     expect(screen.queryByText("Local STT")).toBeNull();
@@ -542,52 +602,6 @@ describe("Meeting — header stays put once stopped (meeting still open)", () =>
     vi.clearAllMocks();
   });
 
-  it("keeps the mic picker mounted after Stop recording, flipping its recording prop to false", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "/api/meetings/meeting-4/stop") {
-          return new Response(JSON.stringify({ status: "stopped" }), { status: 200 });
-        }
-        throw new Error(`unexpected fetch: ${url}`);
-      }),
-    );
-
-    renderAt("/meeting/meeting-4");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("mic-picker")).toHaveAttribute(
-        "data-recording",
-        "true",
-      );
-    });
-    expect(screen.getByTestId("mic-mute-toggle")).toHaveAttribute(
-      "data-recording",
-      "true",
-    );
-
-    await act(async () => {
-      screen.getByRole("button", { name: /stop recording/i }).click();
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /^start recording$/i }),
-      ).toBeInTheDocument();
-    });
-    expect(screen.getByTestId("mic-picker")).toHaveAttribute(
-      "data-recording",
-      "false",
-    );
-    expect(screen.getByTestId("mic-mute-toggle")).toHaveAttribute(
-      "data-recording",
-      "false",
-    );
-
-    vi.unstubAllGlobals();
-  });
-
   it("shows the mic picker with recording=false for a meeting opened already-stopped", async () => {
     state.activeRecording = null;
     vi.stubGlobal(
@@ -616,35 +630,23 @@ describe("Meeting — header stays put once stopped (meeting still open)", () =>
     vi.unstubAllGlobals();
   });
 
-  it("keeps the STT engine chip visible after Stop recording when the meeting has a stamped stt_engine", async () => {
+  it("shows the stamped STT engine chip on a meeting opened already stopped", async () => {
+    state.activeRecording = null;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "/api/meetings/meeting-4/stop") {
-          return new Response(JSON.stringify({ status: "stopped" }), { status: 200 });
-        }
-        throw new Error(`unexpected fetch: ${url}`);
+        throw new Error(`unexpected fetch: ${String(input)}`);
       }),
     );
 
     renderAt("/meeting/meeting-4");
 
     await waitFor(() => {
-      expect(screen.getByTestId("engine-pill")).toHaveTextContent(/^nova-3/);
-    });
-
-    await act(async () => {
-      screen.getByRole("button", { name: /stop recording/i }).click();
-    });
-
-    await waitFor(() => {
       expect(
         screen.getByRole("button", { name: /^start recording$/i }),
       ).toBeInTheDocument();
     });
-    // The chip is meeting metadata (stamped at start), not a live status —
-    // it must not vanish just because recording flipped to false.
+    // The chip is meeting metadata stamped at start, not a live status.
     expect(screen.getByTestId("engine-pill")).toHaveTextContent(/^nova-3/);
 
     vi.unstubAllGlobals();
@@ -686,7 +688,7 @@ describe("Meeting - server-side auto-stop", () => {
     const view = renderAt("/meeting/meeting-live");
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument(),
     );
 
@@ -702,36 +704,23 @@ describe("Meeting - server-side auto-stop", () => {
     expect(navState).toMatchObject({ autoEnhance: { title: "Weekly sync" } });
   });
 
-  it("does not navigate when a manual Stop is followed by Start", async () => {
+  it("lands on the post page when the server ended the recording and its stop answers meeting not found", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify({ error: "meeting not found" }), { status: 400 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
     state.activeRecording = live;
     const view = renderAt("/meeting/meeting-live");
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /stop recording/i }),
-      ).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /^pause$/i })).toBeInTheDocument(),
     );
 
-    await act(async () => {
-      screen.getByRole("button", { name: /stop recording/i }).click();
-    });
     state.activeRecording = null;
     view.refresh();
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /^start recording$/i }),
-      ).toBeInTheDocument(),
-    );
 
-    await act(async () => {
-      screen.getByRole("button", { name: /^start recording$/i }).click();
-    });
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /stop recording/i }),
-      ).toBeInTheDocument(),
-    );
-    view.refresh();
-    expect(screen.queryByTestId("post-view")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("post-view")).toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/stop"))).toBe(false);
   });
 
   it("does not treat a poll that predates the recording as a server stop", async () => {
@@ -739,7 +728,7 @@ describe("Meeting - server-side auto-stop", () => {
     const view = renderAt("/meeting/meeting-live", { autoStart: true });
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument(),
     );
     view.refresh();
@@ -765,7 +754,7 @@ describe("Meeting - server-side auto-stop", () => {
     renderAt("/meeting/meeting-live");
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /stop recording/i }),
+        screen.getByRole("button", { name: /^pause$/i }),
       ).toBeInTheDocument(),
     );
     expect(screen.queryByText(/No audio for a few minutes/)).toBeNull();

@@ -51,7 +51,7 @@ pub enum Channel {
 pub struct AudioChunk {
     pub channel: Channel,
     pub samples: Vec<i16>,
-    /// Milliseconds since meeting start (set by the producer, not the STT impl).
+    /// Milliseconds of this channel's audio sent before this chunk, the clock both engines stamp lines on (set by the producer, not the STT impl).
     pub ts_ms: u64,
 }
 

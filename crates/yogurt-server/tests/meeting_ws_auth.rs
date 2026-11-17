@@ -55,6 +55,7 @@ async fn spawn() -> TestSetup {
         detect: Default::default(),
         import: Default::default(),
         voice: Default::default(),
+        bubble: Default::default(),
         pro: yogurt_server::entitlements::hooks(),
     };
     let app = yogurt_server::__test_router(state.clone());

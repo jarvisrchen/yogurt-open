@@ -157,11 +157,21 @@ async fn delete_model(
             spec.name
         )));
     }
-    if general.voice_enabled && general.voice_model() == spec.name {
-        return Err(Error::Conflict(format!(
-            "{} is the Voice model - pick another in Settings > Voice first",
-            spec.name
-        )));
+    if general.voice_enabled && crate::voice::voice_model(&general).await == spec.name {
+        // A Voice on its default moves from Ultra to a downloaded v3, so Ultra can go.
+        let falls_back = general.voice_stt_model.is_empty()
+            && spec.name == "parakeet-ultra"
+            && tokio::task::spawn_blocking(|| {
+                models::lookup("parakeet-v3").is_some_and(models::is_downloaded)
+            })
+            .await
+            .unwrap_or(false);
+        if !falls_back {
+            return Err(Error::Conflict(format!(
+                "{} is the Voice model - pick another in Settings > Voice first",
+                spec.name
+            )));
+        }
     }
     if spec.name == models::CLEANUP_MODEL.name
         && general.voice_cleanup

@@ -271,7 +271,16 @@ impl Voice {
             self.disarm();
             return NOT_TRUSTED.into();
         }
-        let model = g.voice_model().to_string();
+        let mut model = g.voice_model().to_string();
+        if g.voice_stt_model.is_empty() {
+            // The default depends on which models are downloaded, so only the yogurt that owns the shortcut checks the disk on every poll.
+            if let Err(why) = self.claim(state, &hotkey, shortcut) {
+                self.set_hotkey(None);
+                self.engine = None;
+                return why;
+            }
+            model = voice_model(&g).await;
+        }
         if model == yogurt_db::settings::VOICE_STT_DEEPGRAM {
             let Some(key) = crate::meetings::deepgram_key(state.keys.as_ref()) else {
                 self.disarm();
@@ -743,7 +752,7 @@ async fn transcribe(
         Stt::Deepgram(streaming) => {
             let released = tokio::time::Instant::from_std(released);
             let heard = deepgram_or_local(streaming, released, move || {
-                let model = yogurt_db::settings::VOICE_STT_DEFAULT;
+                let model = yogurt_stt::models::voice_default();
                 let spec = yogurt_stt::models::lookup(model)
                     .ok_or_else(|| anyhow::anyhow!("{model} is not a known model"))?;
                 let path = yogurt_stt::models::resolve_model(spec).ok_or_else(|| {
@@ -755,6 +764,18 @@ async fn transcribe(
             Ok(Some(heard))
         }
     }
+}
+
+/// [`yogurt_db::settings::General::voice_model`], with the default resolved against what is downloaded by
+/// [`yogurt_stt::models::voice_default`]. Everything that loads or guards Voice's model goes through this.
+pub(crate) async fn voice_model(g: &yogurt_db::settings::General) -> String {
+    if !g.voice_stt_model.is_empty() {
+        return g.voice_model().to_string();
+    }
+    tokio::task::spawn_blocking(yogurt_stt::models::voice_default)
+        .await
+        .unwrap_or(yogurt_db::settings::VOICE_STT_DEFAULT)
+        .to_string()
 }
 
 /// Deepgram's text, or `local`'s when Deepgram fails or misses [`DEEPGRAM_WAIT`] after `released`, as [`transcribe`] returns them.

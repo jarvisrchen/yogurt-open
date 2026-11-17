@@ -121,6 +121,16 @@ export function GeneralSection({ general }: GeneralSectionProps) {
             <span>Stop recording automatically when the meeting ends</span>
           </label>
 
+          <label className="flex items-center gap-2 text-ui text-ink">
+            <input
+              type="checkbox"
+              defaultChecked={general.meeting_bubble}
+              onChange={(e) => patch.mutate({ meeting_bubble: e.target.checked })}
+              className="h-4 w-4 accent-blue"
+            />
+            <span>Show the meeting bubble over other apps while recording</span>
+          </label>
+
           <p className="text-meta text-mut">
             Detection reads on-screen window titles for known meeting apps
             (Zoom, Google Meet, Teams, Slack huddles). It never starts a
@@ -131,6 +141,12 @@ export function GeneralSection({ general }: GeneralSectionProps) {
             neither your mic nor the meeting audio has made a sound for 5
             minutes. A minute before the silence stop, the meeting page warns
             you and offers Keep recording.
+          </p>
+
+          <p className="text-meta text-mut">
+            The meeting bubble shows the timer and both channels while you are
+            in another app, and a click brings yogurt back. Drag it anywhere,
+            or close it until you are back in yogurt.
           </p>
 
           <NotificationPermissionControl />

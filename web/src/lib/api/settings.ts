@@ -41,6 +41,8 @@ export interface General {
   /** Stop the recording when the meeting window closes or both channels stay
    *  silent for 5 minutes. */
   meeting_auto_stop: boolean;
+  /** Float the meeting bubble over other apps while a meeting records and no yogurt page has focus. */
+  meeting_bubble: boolean;
   /** Send the latest transcript to the LLM provider every 3 minutes while recording and show the bullets
    *  it returns in the transcript dock. */
   live_recap: boolean;
@@ -54,7 +56,7 @@ export interface General {
   voice_cleanup: boolean;
   /** `"builtin"` or a provider id. */
   voice_cleanup_provider: string;
-  /** The model Voice uses. `""` is parakeet-v3, {@link VOICE_STT_MEETINGS} follows `stt_model`, and {@link VOICE_STT_DEEPGRAM} is Deepgram. */
+  /** The model Voice uses. `""` is the default {@link voiceModel} resolves, {@link VOICE_STT_MEETINGS} follows `stt_model`, and {@link VOICE_STT_DEEPGRAM} is Deepgram. */
   voice_stt_model: string;
 }
 
@@ -62,10 +64,20 @@ export const VOICE_STT_MEETINGS = "meetings";
 /** Uses the Deepgram key and model that meetings use. */
 export const VOICE_STT_DEEPGRAM = "deepgram";
 
-/** The model Voice transcribes with, resolved as `General::voice_model` does on the server. */
-export function voiceModel(g: Pick<General, "voice_stt_model" | "stt_model">): string {
+/**
+ * The model Voice transcribes with, resolved as the server's `voice::voice_model` does: the default is
+ * {@link RECOMMENDED_MODEL}, or parakeet-v3 while only v3 is downloaded.
+ * `undefined` while the default depends on a models list that has not loaded.
+ */
+export function voiceModel(
+  g: Pick<General, "voice_stt_model" | "stt_model">,
+  models: Pick<ModelView, "name" | "downloaded">[] | undefined,
+): string | undefined {
   if (g.voice_stt_model === VOICE_STT_MEETINGS) return g.stt_model;
-  return g.voice_stt_model || RECOMMENDED_MODEL;
+  if (g.voice_stt_model) return g.voice_stt_model;
+  if (!models) return undefined;
+  const onDisk = (name: string) => models.some((m) => m.name === name && m.downloaded);
+  return !onDisk(RECOMMENDED_MODEL) && onDisk("parakeet-v3") ? "parakeet-v3" : RECOMMENDED_MODEL;
 }
 
 export type RecapPlacement = "dock" | "main";
@@ -271,7 +283,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { bearerFetch } from "../session";
-import { RECOMMENDED_MODEL } from "../../components/settings/modelTypes";
+import { RECOMMENDED_MODEL, type ModelView } from "../../components/settings/modelTypes";
 
 export const settingsKey = ["settings"] as const;
 

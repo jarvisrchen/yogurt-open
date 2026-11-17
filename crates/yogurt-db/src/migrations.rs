@@ -55,6 +55,9 @@ fn migrations() -> Migrations<'static> {
             "../migrations/V025__meetings_title_suggestions.sql"
         )),
         M::up(include_str!("../migrations/V026__llm_calls.sql")),
+        M::up(include_str!(
+            "../migrations/V027__parakeet_ultra_default.sql"
+        )),
     ])
 }
 
@@ -388,7 +391,7 @@ mod tests {
             if let Some(v) = voice {
                 set("general.voice_stt_model", v);
             }
-            migrations().to_latest(&mut conn).unwrap();
+            migrations().to_version(&mut conn, 20).unwrap();
             let kv = |k: &str| -> Option<String> {
                 conn.query_row("SELECT value FROM settings WHERE key = ?1", [k], |r| {
                     r.get(0)
@@ -416,6 +419,55 @@ mod tests {
             after("true", "tiny.en", Some("meetings")),
             ("tiny.en".into(), Some("meetings".into()))
         );
+    }
+
+    #[test]
+    fn v027_defaults_new_installs_to_parakeet_ultra_and_keeps_a_picked_v3() {
+        let after = |welcomed: &str, provider: &str, stt: &str| {
+            let mut conn = Connection::open_in_memory().unwrap();
+            // V003b makes V026 the 27th migration.
+            migrations().to_version(&mut conn, 27).unwrap();
+            for (k, v) in [
+                ("first_run_completed", welcomed),
+                ("stt.provider", provider),
+                ("stt.model", stt),
+            ] {
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                    [k, v],
+                )
+                .unwrap();
+            }
+            migrations().to_latest(&mut conn).unwrap();
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = 'stt.model'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(after("false", "cloud", "parakeet-v3"), "parakeet-ultra");
+        assert_eq!(
+            after("false", "local", "parakeet-v3"),
+            "parakeet-v3",
+            "a Local pick made before Welcome finished stays"
+        );
+        assert_eq!(after("true", "cloud", "parakeet-v3"), "parakeet-v3");
+        assert_eq!(after("true", "local", "parakeet-v3"), "parakeet-v3");
+    }
+
+    #[test]
+    fn fresh_install_defaults_meetings_to_parakeet_ultra() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrations().to_latest(&mut conn).unwrap();
+        let model: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'stt.model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, "parakeet-ultra");
     }
 
     #[test]

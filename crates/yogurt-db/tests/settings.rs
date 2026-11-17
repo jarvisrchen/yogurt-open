@@ -73,13 +73,13 @@ fn it_saves_a_general_patch_and_returns_updated() {
     assert_eq!(patched.audio_input_device, "MacBook Pro Microphone");
 }
 
-/// V005 seeds defaults, and V019 makes a fresh install's model Parakeet.
+/// V005 seeds defaults, and V027 makes a fresh install's model Parakeet Ultra.
 #[test]
 fn it_loads_seeded_stt_defaults() {
     let db = Db::open_in_memory().unwrap();
     let g = settings::load_general(&db).unwrap();
     assert_eq!(g.stt_provider, "cloud");
-    assert_eq!(g.stt_model, "parakeet-v3");
+    assert_eq!(g.stt_model, "parakeet-ultra");
 }
 
 #[test]
@@ -180,6 +180,23 @@ fn it_loads_meeting_auto_stop_default_and_patches_it() {
 }
 
 #[test]
+fn it_loads_meeting_bubble_default_and_patches_it() {
+    let db = Db::open_in_memory().unwrap();
+    assert!(settings::load_general(&db).unwrap().meeting_bubble);
+
+    let patched = settings::save_general_patch(
+        &db,
+        settings::GeneralPatch {
+            meeting_bubble: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!patched.meeting_bubble);
+    assert!(!settings::load_general(&db).unwrap().meeting_bubble);
+}
+
+#[test]
 fn voice_defaults_off_on_fn_and_round_trips() {
     let db = Db::open_in_memory().unwrap();
     let g = settings::load_general(&db).unwrap();
@@ -240,13 +257,13 @@ fn voice_stt_model_defaults_to_parakeet_and_follows_meetings_only_when_picked() 
     };
     let unset = settings::load_general(&db).unwrap();
     assert_eq!(unset.voice_stt_model, "");
-    assert_eq!(unset.voice_model(), "parakeet-v3");
+    assert_eq!(unset.voice_model(), "parakeet-ultra");
     assert_eq!(pick("small.en").voice_model(), "small.en");
     assert_eq!(pick("tiny.en").voice_model(), "tiny.en");
     let meetings = pick("meetings");
     assert_eq!(meetings.voice_stt_model, "meetings");
     assert_eq!(meetings.voice_model(), "large-v3-turbo");
-    assert_eq!(pick("").voice_model(), "parakeet-v3");
+    assert_eq!(pick("").voice_model(), "parakeet-ultra");
 }
 
 #[test]

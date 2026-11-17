@@ -11,6 +11,7 @@
 //!   `MAX_CONSECUTIVE_DROPS` drops in a row emit a synthetic overload event.
 //! - Reconnect: transient errors retry up to `MAX_RECONNECT_ATTEMPTS` times with 1s, 2s, 4s backoff and a synthetic status event.
 //! - Auth: HTTP 401/403 on the upgrade is terminal, with an "[stt auth failed]" event so the user can fix the key.
+//! - Idle: a socket whose audio stops sends `Finalize` after [`FINALIZE_AFTER`], then a KeepAlive every [`KEEPALIVE_EVERY`].
 
 use crate::{AudioChunk, AudioRx, Channel, Stt, TranscriptEvent, TranscriptTx};
 use async_trait::async_trait;
@@ -23,6 +24,17 @@ use tokio_tungstenite::tungstenite::Message;
 const MAX_CONSECUTIVE_DROPS: usize = 50;
 
 const MAX_RECONNECT_ATTEMPTS: usize = 3;
+
+/// Deepgram closes a socket that gets nothing for 10 s and asks for a KeepAlive every 3 to 5 s, which it does not bill as audio.
+/// A paused meeting sends no audio, so this keeps its sockets open.
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(4);
+
+/// Audio that stops for this long gets a `Finalize`.
+/// Deepgram waits for more audio before it ends an utterance, so without it the line a pause cut off would join the first line after resume.
+const FINALIZE_AFTER: Duration = Duration::from_secs(1);
+
+/// 20 ms of 16 kHz linear16 silence.
+const SILENT_FRAME_BYTES: usize = 640;
 
 /// Deepgram rejects a request whose keyterms pass 500 tokens.
 /// A token covers at least one byte of a term, so terms whose bytes add up to this always fit.
@@ -342,6 +354,12 @@ async fn spawn_supervised_session(
             let mut clean_shutdown = false;
             let mut needs_reconnect = false;
             let mut utterance = UtteranceState::default();
+            let mut sent_audio = false;
+            // The STT time of this socket's first chunk. Deepgram's times restart at 0 on every socket.
+            let mut socket_start: Option<u64> = None;
+            let mut unfinalized = false;
+            let idle = tokio::time::sleep(KEEPALIVE_EVERY);
+            tokio::pin!(idle);
             loop {
                 tokio::select! {
                     // Prefer the reader so a server-initiated close is handled before audio is pushed into the void.
@@ -349,7 +367,8 @@ async fn spawn_supervised_session(
                     msg = read.next() => {
                         match msg {
                             Some(Ok(Message::Text(t))) => {
-                                if let Some(ev) = fold_deepgram_event(&mut utterance, &t, channel) {
+                                if let Some(mut ev) = fold_deepgram_event(&mut utterance, &t, channel) {
+                                    ev.ts_ms += socket_start.unwrap_or(last_ts_ms);
                                     let _ = txn.send(ev);
                                 }
                             }
@@ -376,6 +395,7 @@ async fn spawn_supervised_session(
                         match audio {
                             Some(chunk) => {
                                 last_ts_ms = chunk.ts_ms;
+                                socket_start.get_or_insert(chunk.ts_ms);
                                 let bytes = i16_slice_to_le_bytes(&chunk.samples);
                                 if write.send(Message::Binary(bytes)).await.is_err() {
                                     tracing::warn!(
@@ -385,6 +405,9 @@ async fn spawn_supervised_session(
                                     needs_reconnect = true;
                                     break;
                                 }
+                                sent_audio = true;
+                                unfinalized = true;
+                                idle.as_mut().reset(tokio::time::Instant::now() + FINALIZE_AFTER);
                             }
                             None => {
                                 tracing::info!(
@@ -398,6 +421,24 @@ async fn spawn_supervised_session(
                                 break;
                             }
                         }
+                    }
+                    () = &mut idle => {
+                        // KeepAlive alone does not hold a socket that never got audio, so a connection idle from its start sends one silent frame first.
+                        let msg = if unfinalized {
+                            Message::Text(serde_json::json!({ "type": "Finalize" }).to_string())
+                        } else if sent_audio {
+                            Message::Text(serde_json::json!({ "type": "KeepAlive" }).to_string())
+                        } else {
+                            Message::Binary(vec![0; SILENT_FRAME_BYTES])
+                        };
+                        if write.send(msg).await.is_err() {
+                            tracing::warn!(?channel, "deepgram writer: keepalive failed, will reconnect");
+                            needs_reconnect = true;
+                            break;
+                        }
+                        sent_audio = true;
+                        unfinalized = false;
+                        idle.as_mut().reset(tokio::time::Instant::now() + KEEPALIVE_EVERY);
                     }
                 }
             }
@@ -484,6 +525,8 @@ pub struct UtteranceState {
     /// Deepgram can resend the terminal `speech_final` frame on reconnect, and by then `buf` and `start_ms` have been reset,
     /// so the duplicate would re-emit as a new utterance. Comparing against this drops the repeat.
     last_final: Option<String>,
+    /// Confidence of the latest frame with words. A closing frame with none, such as a `Finalize` reply, reports 0, which the noise filter would drop.
+    confidence: Option<f32>,
 }
 
 fn join_words(a: &str, b: &str) -> String {
@@ -514,17 +557,25 @@ pub fn fold_deepgram_event(
         .and_then(|x| x.as_f64())
         .map(|c| c as f32);
     let window_final = v.get("is_final").and_then(|x| x.as_bool()).unwrap_or(false);
-    let speech_final = v
-        .get("speech_final")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(window_final);
-    let ts_now = (v.get("start").and_then(|x| x.as_f64()).unwrap_or(0.0) * 1000.0) as u64;
+    // A `Finalize` reply ends the utterance as surely as an endpoint does.
+    let from_finalize = v.get("from_finalize").and_then(|x| x.as_bool()) == Some(true);
+    let speech_final = from_finalize
+        || v.get("speech_final")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(window_final);
+    // The first word's start, since a window can open seconds before anyone speaks, as one does on resume after a pause.
+    let start_s = alt
+        .pointer("/words/0/start")
+        .or_else(|| v.get("start"))
+        .and_then(|x| x.as_f64());
+    let ts_now = (start_s.unwrap_or(0.0) * 1000.0) as u64;
 
     if transcript.is_empty() && !speech_final {
         return None;
     }
-    if st.start_ms.is_none() && !transcript.is_empty() {
-        st.start_ms = Some(ts_now);
+    if !transcript.is_empty() {
+        st.start_ms.get_or_insert(ts_now);
+        st.confidence = confidence;
     }
     let ts_ms = st.start_ms.unwrap_or(ts_now);
 
@@ -544,7 +595,7 @@ pub fn fold_deepgram_event(
             channel,
             text: full,
             is_final: true,
-            confidence,
+            confidence: st.confidence.take(),
         })
     } else if window_final {
         st.buf = join_words(&st.buf, &transcript);
@@ -714,6 +765,27 @@ mod utterance_tests {
         format!(
             r#"{{"type":"Results","channel":{{"alternatives":[{{"transcript":"{text}"}}]}},"is_final":{window_final},"speech_final":{speech_final},"start":{start}}}"#
         )
+    }
+
+    #[test]
+    fn a_finalize_reply_ends_the_utterance() {
+        let mut st = UtteranceState::default();
+        let window = r#"{"type":"Results","channel":{"alternatives":[{"transcript":"cut off by","confidence":0.9}]},"is_final":true,"speech_final":false,"start":2.0}"#;
+        fold_deepgram_event(&mut st, window, Channel::Mic);
+        let finalized = r#"{"type":"Results","channel":{"alternatives":[{"transcript":"","confidence":0.0}]},"is_final":true,"speech_final":false,"from_finalize":true,"start":3.0}"#;
+        let f = fold_deepgram_event(&mut st, finalized, Channel::Mic).unwrap();
+        assert!(f.is_final);
+        assert_eq!(f.text, "cut off by");
+        assert_eq!(f.ts_ms, 2000);
+        assert_eq!(
+            f.confidence,
+            Some(0.9),
+            "not the empty reply's 0, which the noise filter drops"
+        );
+        let resumed = r#"{"type":"Results","channel":{"alternatives":[{"transcript":"after resume","words":[{"word":"after","start":5.25}]}]},"is_final":false,"start":3.0}"#;
+        let n = fold_deepgram_event(&mut st, resumed, Channel::Mic).unwrap();
+        assert_eq!(n.text, "after resume", "the next utterance starts fresh");
+        assert_eq!(n.ts_ms, 5250, "at its first word, not the window's start");
     }
 
     #[test]

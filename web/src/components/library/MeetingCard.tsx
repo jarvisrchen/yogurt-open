@@ -40,6 +40,8 @@ interface Props {
   meeting: MeetingSummary;
   // Passed down from the Library route so the list shares one poll.
   activeId?: string | null;
+  /** Whether the live meeting, the one `activeId` names, is paused. */
+  livePaused?: boolean;
   selectionActive?: boolean;
   selected?: boolean;
   onToggleSelect?: (id: string, shiftKey: boolean) => void;
@@ -49,6 +51,7 @@ interface Props {
 export function MeetingCard({
   meeting,
   activeId,
+  livePaused = false,
   archived = false,
   selectionActive = false,
   selected = false,
@@ -131,12 +134,12 @@ export function MeetingCard({
         {hinted && <TitleHint meeting={meeting} hidden={isLive} onRenamed={setRenamedFrom} />}
         {isLive ? (
           <div className="mt-1">
-            <MetaPill tone="warn">
+            <MetaPill tone={livePaused ? "neutral" : "warn"}>
               <span
                 aria-hidden="true"
-                className="inline-block w-1.5 h-1.5 rounded-pill bg-straw animate-recpulse"
+                className={`inline-block w-1.5 h-1.5 rounded-pill ${livePaused ? "bg-mut" : "bg-straw animate-recpulse"}`}
               />
-              Recording
+              {livePaused ? "Paused" : "Recording"}
             </MetaPill>
           </div>
         ) : (

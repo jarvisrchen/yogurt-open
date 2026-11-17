@@ -44,6 +44,7 @@ pub struct AppState {
     /// The Granola import job and its last result.
     pub import: Arc<crate::granola_import::ImportJob>,
     pub voice: Arc<crate::api::voice::VoiceShared>,
+    pub bubble: Arc<crate::bubble::BubbleShared>,
     pub pro: Arc<dyn crate::entitlements::ProHooks>,
 }
 
@@ -160,6 +161,7 @@ impl AppState {
                 shortcut: cfg.voice_shortcut,
                 ..Default::default()
             }),
+            bubble: Default::default(),
             pro: crate::entitlements::hooks(),
         })
     }
@@ -203,6 +205,7 @@ impl AppState {
             detect: Default::default(),
             import: Default::default(),
             voice: Default::default(),
+            bubble: Default::default(),
             pro: crate::entitlements::hooks(),
         })
     }

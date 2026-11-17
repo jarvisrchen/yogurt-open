@@ -62,6 +62,12 @@ describe("voice formatting", () => {
       unpriced: 0,
       parts: ["gemini-3.5-flash-lite ≈ $0.030", "deepseek-v4-flash ≈ $0.020"],
     });
+    expect(costRow([cost("MiniMax-M3", 0.00021), cost("gemini-3.5-flash-lite", 0.00018), cost("qwen3-4b-instruct", 0)]).parts).toEqual([
+      "MiniMax-M3 ≈ $0.0002",
+      "gemini-3.5-flash-lite ≈ $0.0002",
+      "qwen3-4b-instruct $0",
+    ]);
+    expect(costRow([cost("MiniMax-M3", 0.0007), cost("gemini-3.5-flash-lite", 0.0012)]).parts).toEqual(["MiniMax-M3 ≈ $0.0007", "gemini-3.5-flash-lite ≈ $0.001"]);
     expect(costRow([cost("gemini-3.5-flash-lite", 0.03), cost("llama3.2:3b", 0, 3, 3)])).toEqual({
       usd: 0.03,
       unpriced: 3,

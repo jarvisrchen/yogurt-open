@@ -83,7 +83,8 @@ export function costRow(costs: ModelCost[]): Cost {
     costs.length > 1 || unpriced > 0
       ? costs.map((c) =>
           c.count > c.unpriced_count
-            ? `${c.model} ${approxUsd(c.usd)}`
+            ? // One significant digit under a tenth of a cent, where each model's share of a few dictations sits, so the rows differ.
+              `${c.model} ${c.usd > 0 && c.usd < 0.001 ? `≈ ${usd(c.usd)}` : approxUsd(c.usd)}`
             : `${c.model} ${formatCount(c.input_tokens + c.output_tokens)} tokens`,
         )
       : [];

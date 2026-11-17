@@ -142,7 +142,7 @@ Crate responsibilities, one line each:
 | `yogurt-llm` | `LlmClient` trait, OpenAI-compatible HTTP client with `base_url` override, SSE streaming, and the local agent-CLI provider adapter (§7.6). |
 | `yogurt-db` | SQLite open/migrate, `MeetingRepo`, settings, providers, `ApiKeyStore` over `~/.yogurt/keys.json`. |
 | `yogurt-granola` | Granola public REST API client (paging, rate limit, retries, the 413 transcript fallback) and the pure mapping from a Granola note to a meeting. |
-| `yogurt-voice` | macOS glue for Yogurt Voice dictation: the `NSApplication` main loop, the hotkey `CGEventTap` and its hold, tap, and shortcut logic, the recorder that tap runs while Settings records a new hotkey, since Chrome drops Fn before the page sees it, the Accessibility check, the clipboard paste, which puts a space before a dictation that follows the previous one in the same app with no key press or click between, and the pill, a non-activating `NSPanel` that shows each clip's state and its mic level. It knows nothing about audio, STT, or LLMs; `yogurt-server`'s voice task owns those and drives the pill, including the optional cleanup in `voice_cleanup.rs`, which streams each dictation through the picked provider and pastes the raw text if the first word takes over 1.5 s, the answer stalls for 500 ms, or the whole answer takes over 1.5 s plus 25 ms per word. |
+| `yogurt-voice` | macOS glue for Yogurt Voice dictation: the `NSApplication` main loop, the hotkey `CGEventTap` and its hold, tap, and shortcut logic, the recorder that tap runs while Settings records a new hotkey, since Chrome drops Fn before the page sees it, the Accessibility check, the clipboard paste, which puts a space before a dictation that follows the previous one in the same app with no key press or click between, and the pill, a non-activating `NSPanel` that shows each clip's state and its mic level, and the meeting bubble, a second one that takes clicks, hover and drags without activating yogurt. It knows nothing about audio, STT, or LLMs; `yogurt-server`'s voice task owns those and drives the pill, including the optional cleanup in `voice_cleanup.rs`, which streams each dictation through the picked provider and pastes the raw text if the first word takes over 1.5 s, the answer stalls for 500 ms, or the whole answer takes over 1.5 s plus 25 ms per word. |
 
 ### The one format contract that everything downstream depends on
 
@@ -159,6 +159,7 @@ The interesting constraint: `cpal::Stream` is `!Send`, so the capture handle can
 That single fact shapes the whole recording path.
 
 `yogurt start` gives the main thread to AppKit, which Yogurt Voice's event tap and panel need, with no Dock icon.
+The meeting bubble is a second non-activating panel on that thread: `yogurt-server`'s `bubble` task shows it while a meeting records and no page reports focus over `/ws`, and a click on it brings back the app that was in front when a page last had focus, through `NSRunningApplication` rather than a subprocess.
 The tokio runtime is built by hand and the server runs on its own `yogurt-server` thread, and the process exits when the server returns.
 `doctor` and `ctl` never start AppKit.
 
@@ -307,6 +308,13 @@ Details that matter and are easy to get wrong:
   `is_final` marks an interim-final that will not be revised; `speech_final` marks end of utterance.
   Reading the wrong field made every interim-final render as a new locked line.
   `endpointing=1000` (ms) is what turns clause fragments into sentence-shaped lines.
+  A line is stamped at its first word's `start`, because a result window can open seconds before anyone speaks.
+- **A pause sends silence for 1.5 s, then no audio at all.**
+  The silence lets the local segmenter close the line the pause cut off.
+  Deepgram waits for more audio before it ends an utterance, so a socket whose audio stops for 1 s sends `Finalize`, whose `from_finalize` reply ends the line, and then a `KeepAlive` text frame every 4 s instead of billable audio.
+  Both engines stamp a line by how much audio they were sent, so the pump keeps an `AudioClock` per channel that counts the frames it holds back or its receiver loses to lag, and the relay moves every later line past them.
+  Deepgram's times restart at 0 on every socket, so each socket adds the STT time of its first chunk, which keeps lines right after a reconnect too.
+  KeepAlive does not hold a socket that has never had audio, so a socket idle from its first moment sends one 20 ms silent frame first.
 - **Subscription order is load-bearing.**
   Persistence and STT both subscribe *before* the audio pump publishes, so no opening words are dropped.
 - **Backpressure is visible, not silent.**
@@ -486,7 +494,7 @@ sequenceDiagram
     end
 ```
 
-The whisper models come from the `ggerganov/whisper.cpp` HuggingFace repo, and Parakeet from `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` at a pinned revision.
+The whisper models come from the `ggerganov/whisper.cpp` HuggingFace repo, and Parakeet v3 and Ultra from `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` and `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8` at pinned revisions.
 Every SHA256 in `models::REGISTRY` was verified against the real blob rather than copied from a manifest.
 A model is a list of files: one ggml file for whisper, and an encoder, decoder, joiner, and tokens file for Parakeet.
 Each file downloads, resumes, and verifies on its own, and the model counts as downloaded only when every file verifies in one folder.
@@ -561,12 +569,17 @@ What the meeting pipeline takes from whisper, and how Parakeet fills it:
 
 | Model | Disk | Intel Macs | Notes |
 |---|---|---|---|
-| `parakeet-v3` | 670 MB | yes | **Recommended**, the Voice default, and the default for a new install (`V019`). Parakeet on the CPU, about twice small.en's speed, and it keeps that speed while whisper uses the GPU. |
+| `parakeet-ultra` | 670 MB | yes | **Recommended**, the Voice default, and the default for a new install (`V027`). Moondream's post-trained v3: the same architecture, tokens, and code path, with weights that [the int8 eval](.planning/2026-11-15-parakeet-ultra-eval.md) found make fewer errors, most of all in noise, at the same speed. |
+| `parakeet-v3` | 670 MB | yes | The default before `V027`. Parakeet on the CPU, about twice small.en's speed, and it keeps that speed while whisper uses the GPU. |
 | `small.en` | 487 MB | yes | The seeded default (`V005`) for installs before `V019`. |
 | `tiny.en` | 75 MB | yes | Fastest, roughest. Fine for a smoke test. |
 | `large-v3-turbo` | 1.6 GB | slow | Most accurate, slowest. |
 
 `medium.en` and `large-v3` live in `models::RETIRED`: `V019` moved any setting that named one to `large-v3-turbo`, and the picker lists a copy still on disk, tagged `retired`, only so it can be deleted.
+
+A Voice left on its default (`voice_stt_model` unset) uses Ultra, or v3 while only v3 is downloaded (`models::voice_default`, mirrored by `voiceModel` in the page), so the update that moved the default never left Voice on a model that is not on disk.
+`V027` moves the meetings model to Ultra only for a new install, under `V019`'s rule: Welcome not finished and not on Local.
+A model someone picked, v3 included, stays.
 
 `intel_supported` is a hint, not a gate: the picker tags the affected models `slow` on an x86 Mac, and nothing stops the user selecting or downloading one.
 The flag exists because Metal acceleration is not there to carry them, not because they cannot run.
@@ -789,7 +802,7 @@ No function returns or logs either.
 `cloud/api/stt-token.ts` trades the Deepgram key for a token that expires in 30 seconds, and only for the signed-in owner with an unlocked browser token, so the phone never sees the key.
 The phone's audio goes from the browser to Deepgram directly, is held in memory only while a socket is down, and is never stored.
 In the Android app the user can pick Local instead, in Settings > Transcription, and then the audio never leaves the phone.
-The app's recorder service runs sherpa-onnx: Silero cuts the mic's audio at pauses, and Whisper (`tiny.en`, `base.en`, `small.en`) or Parakeet TDT v3 (`parakeet-v3`) turns each stretch into one line.
+The app's recorder service runs sherpa-onnx: Silero cuts the mic's audio at pauses, and Whisper (`tiny.en`, `base.en`, `small.en`) or Parakeet (`parakeet-v3`, `parakeet-ultra`) turns each stretch into one line.
 Speech waits in memory for the model, up to 20 minutes, and the record screen shows how far behind it is past 15 seconds.
 The models download through Android's download manager, over Wi-Fi only, from pinned Hugging Face revisions, and count only once every file matches its SHA-256 (`android/.../Models.kt`).
 The meeting's `stt_engine` names the engine, `cloud · nova-3 · phone` or `local · <model> · phone`, which the Mac shows as its engine pill.
@@ -886,7 +899,9 @@ The mic and system channels are **two separate Deepgram WebSocket sessions** (`s
 Both stream continuously for the whole meeting, including silence, because the cloud path has no VAD gate.
 Deepgram bills streamed audio duration, so:
 
-> **Billed minutes = 2 x wall-clock meeting length**, regardless of how much anyone actually talks.
+> **Billed minutes = 2 x wall-clock meeting length less paused time**, regardless of how much anyone actually talks.
+
+A pause sends 1.5 s of silence per channel and then only KeepAlive messages, which carry no audio.
 
 A solo meeting where nobody else is on the call still pays for the system channel streaming an hour of silence.
 

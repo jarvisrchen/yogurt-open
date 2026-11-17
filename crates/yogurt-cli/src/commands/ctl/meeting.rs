@@ -83,6 +83,12 @@ pub enum MeetingCmd {
         #[command(subcommand)]
         action: MuteAction,
     },
+    /// Pause or resume the whole recording: both channels go silent and nothing is transcribed. Idempotent;
+    /// defaults to whatever is currently recording.
+    Pause {
+        #[command(subcommand)]
+        action: PauseAction,
+    },
     /// Full-text search across title, notes, and transcript.
     Search {
         query: String,
@@ -114,6 +120,14 @@ pub enum MuteAction {
     /// Pause the mic.
     On { meeting: Option<String> },
     /// Resume the mic.
+    Off { meeting: Option<String> },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PauseAction {
+    /// Pause the recording.
+    On { meeting: Option<String> },
+    /// Resume the recording.
     Off { meeting: Option<String> },
 }
 
@@ -152,6 +166,7 @@ pub async fn run(cmd: MeetingCmd, port: Option<u16>, json_out: bool) -> Result<(
         }
         MeetingCmd::Keep { version } => keep(port, json_out, version).await,
         MeetingCmd::Mute { action } => mute(port, json_out, action).await,
+        MeetingCmd::Pause { action } => pause(port, json_out, action).await,
         MeetingCmd::Search { query, limit } => search(port, json_out, &query, limit).await,
         MeetingCmd::Delete {
             meeting,
@@ -833,22 +848,7 @@ async fn mute(port_flag: Option<u16>, json_out: bool, action: MuteAction) -> Res
         MuteAction::On { meeting } => (true, meeting),
         MuteAction::Off { meeting } => (false, meeting),
     };
-    let (c, id) = match meeting {
-        Some(m) => client_for_ref(port_flag, &MeetingRef::parse(&m)).await?,
-        None => {
-            let c = Client::discover(port_flag).await?;
-            let active: Option<ActiveRef> = c.get("/api/meetings/active").await?;
-            match active {
-                Some(a) => (c, a.id),
-                None => {
-                    return Err(CtlError::local(
-                        "no active meeting to mute",
-                        "pass a meeting id, or start a recording first",
-                    ))
-                }
-            }
-        }
-    };
+    let (c, id) = recording_target(port_flag, meeting, "mute").await?;
     let _: serde_json::Value = c
         .post(
             &format!("/api/meetings/{id}/mic-muted"),
@@ -862,6 +862,51 @@ async fn mute(port_flag: Option<u16>, json_out: bool, action: MuteAction) -> Res
         println!("{state} {id}");
     }
     Ok(())
+}
+
+/// `POST /api/meetings/:id/paused`, with the same 409 and default meeting as [`mute`].
+async fn pause(
+    port_flag: Option<u16>,
+    json_out: bool,
+    action: PauseAction,
+) -> Result<(), CtlError> {
+    let (paused, meeting) = match action {
+        PauseAction::On { meeting } => (true, meeting),
+        PauseAction::Off { meeting } => (false, meeting),
+    };
+    let (c, id) = recording_target(port_flag, meeting, "pause").await?;
+    let _: serde_json::Value = c
+        .post(
+            &format!("/api/meetings/{id}/paused"),
+            &json!({ "paused": paused }),
+        )
+        .await?;
+    if json_out {
+        println!("{}", json!({ "id": id, "paused": paused }));
+    } else {
+        println!("{} {id}", if paused { "paused" } else { "resumed" });
+    }
+    Ok(())
+}
+
+/// The named meeting, or the one recording now when none is named.
+async fn recording_target(
+    port_flag: Option<u16>,
+    meeting: Option<String>,
+    verb: &str,
+) -> Result<(Client, String), CtlError> {
+    if let Some(m) = meeting {
+        return client_for_ref(port_flag, &MeetingRef::parse(&m)).await;
+    }
+    let c = Client::discover(port_flag).await?;
+    let active: Option<ActiveRef> = c.get("/api/meetings/active").await?;
+    match active {
+        Some(a) => Ok((c, a.id)),
+        None => Err(CtlError::local(
+            format!("no active meeting to {verb}"),
+            "pass a meeting id, or start a recording first",
+        )),
+    }
 }
 
 /// Percent-encodes a query-string value: byte-wise, `+` for space, `%XX` otherwise, which is correct for UTF-8.

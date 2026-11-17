@@ -49,6 +49,7 @@ fn build_test_state(bind_port: u16) -> (AppState, String, tempfile::TempDir) {
         detect: Default::default(),
         import: Default::default(),
         voice: Default::default(),
+        bubble: Default::default(),
         pro: yogurt_server::entitlements::hooks(),
     };
     (state, token_str, tmp)
@@ -133,6 +134,8 @@ async fn system_stall_reaches_ws_while_mic_keeps_flowing() {
         sys_rx,
         audio_tx,
         m.events_tx.clone(),
+        Default::default(),
+        Default::default(),
         Default::default(),
     ));
 

@@ -38,6 +38,7 @@ function renderSection() {
           meeting_detection: true,
           meeting_detection_focus: true,
           meeting_auto_stop: true,
+          meeting_bubble: true,
           live_recap: true,
           live_recap_placement: "dock",
           voice_enabled: false,
@@ -158,5 +159,17 @@ describe("GeneralSection auto-stop", () => {
       }),
     ).toBeChecked();
     expect(screen.getByText(/neither your mic nor the meeting audio/)).toBeInTheDocument();
+  });
+});
+
+describe("GeneralSection meeting bubble", () => {
+  it("shows the bubble checkbox on and says how to move or close it", () => {
+    renderSection();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Show the meeting bubble over other apps while recording",
+      }),
+    ).toBeChecked();
+    expect(screen.getByText(/close it until you are back in yogurt/)).toBeInTheDocument();
   });
 });

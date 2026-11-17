@@ -79,6 +79,7 @@ function general(overrides: Partial<General> = {}): General {
     meeting_detection: true,
     meeting_detection_focus: true,
     meeting_auto_stop: true,
+    meeting_bubble: true,
     live_recap: true,
     live_recap_placement: "dock",
     voice_enabled: true,
@@ -237,20 +238,20 @@ describe("VoiceSection", () => {
   });
 
   it("offers the picker's Download when the Voice model is missing", async () => {
-    models = [model("parakeet-v3", false)];
+    models = [model("parakeet-ultra", false)];
     vi.mocked(fetchVoiceStatus).mockResolvedValue({
       accessibility: "granted",
       running: false,
-      status: "the local model parakeet-v3 is not downloaded; download it in Settings > Voice",
+      status: "the local model parakeet-ultra is not downloaded; download it in Settings > Voice",
     });
     renderSection(general({ stt_provider: "cloud" }));
     expect(await screen.findByText("Model missing")).toBeInTheDocument();
     expect(
-      screen.getByText("The local model parakeet-v3 is not downloaded; download it in Settings > Voice."),
+      screen.getByText("The local model parakeet-ultra is not downloaded; download it in Settings > Voice."),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download parakeet-v3" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Download the Voice model, parakeet-v3" }));
-    await waitFor(() => expect(vi.mocked(startDownload)).toHaveBeenCalledWith("parakeet-v3"));
+    expect(screen.getByRole("button", { name: "Download parakeet-ultra" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Download the Voice model, parakeet-ultra" }));
+    await waitFor(() => expect(vi.mocked(startDownload)).toHaveBeenCalledWith("parakeet-ultra"));
   });
 
   it("flags the model Same as meetings follows when it is missing", async () => {
@@ -262,9 +263,9 @@ describe("VoiceSection", () => {
   });
 
   it("trusts the running voice task over a stale models list", async () => {
-    models = [model("parakeet-v3", false)];
+    models = [model("parakeet-ultra", false)];
     renderSection(general());
-    expect(await screen.findByText("On · local parakeet-v3")).toBeInTheDocument();
+    expect(await screen.findByText("On · local parakeet-ultra")).toBeInTheDocument();
     expect(screen.queryByText("Model missing")).toBeNull();
     expect(screen.queryByRole("button", { name: /Download the Voice model/ })).toBeNull();
   });

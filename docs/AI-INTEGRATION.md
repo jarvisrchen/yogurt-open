@@ -47,6 +47,7 @@ curl -s http://localhost:7878/api/meetings/active -H "Authorization: Bearer $TOK
 | POST | `/api/meetings/{id}/recap/refresh` | update the recap now (202, or 409 when not recording) | `ctl meeting recap --refresh` |
 | POST | `/api/meetings/{id}/keep-recording` | dismiss the silence auto-stop warning | - |
 | POST | `/api/meetings/{id}/mic-muted` | mute/unmute mic | `ctl meeting mute` |
+| POST | `/api/meetings/{id}/paused` | pause or resume the whole recording: `{paused}` | `ctl meeting pause` |
 | POST | `/api/meetings/{id}/chat` | ask a question (streamed) | - |
 | POST | `/api/chat` | ask across all meetings: `{messages}`, NDJSON `{sources}` then `{delta}` lines | - |
 | GET | `/api/meetings/detected` | detected meeting | `ctl detect` |

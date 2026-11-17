@@ -43,7 +43,7 @@ pub struct General {
     /// Which STT engine `meetings/start.rs` constructs: `"cloud"` (`DeepgramStt`) or `"local"` (`LocalModel`). Seeded to `"cloud"` by V005.
     pub stt_provider: String,
     /// Local model to load when `stt_provider == "local"`. Must match a `name` in `yogurt_stt::models::REGISTRY`.
-    /// Seeded to `"small.en"` by V005, and V019 makes a new install's `"parakeet-v3"`.
+    /// Seeded to `"small.en"` by V005, and V027 makes a new install's `"parakeet-ultra"`.
     pub stt_model: String,
     /// Watch for meeting app windows and offer to start recording. Detection never starts a recording on its own;
     /// it only surfaces the prompt (and stops a recording once the detected window closes). No seed row; absent means `true`.
@@ -54,6 +54,8 @@ pub struct General {
     /// Stop the recording when the meeting window closes or both channels
     /// stay silent. No seed row; absent means `true`.
     pub meeting_auto_stop: bool,
+    /// Float the meeting bubble over other apps while a meeting records. No seed row; absent means `true`.
+    pub meeting_bubble: bool,
     /// Send the latest transcript to the LLM provider every few minutes while
     /// recording and show the bullets it returns. It has no seed row, so absent means `true`.
     pub live_recap: bool,
@@ -75,14 +77,16 @@ pub struct General {
     pub voice_input_device: String,
 }
 
-/// The `voice_stt_model` an unset row resolves to.
-pub const VOICE_STT_DEFAULT: &str = "parakeet-v3";
+/// The `voice_stt_model` an unset row resolves to. Where it loads a model, the server goes through
+/// `yogurt_stt::models::voice_default`, which keeps a Mac with only parakeet-v3 on v3 until this is downloaded.
+pub const VOICE_STT_DEFAULT: &str = "parakeet-ultra";
 pub const VOICE_STT_MEETINGS: &str = "meetings";
 /// Uses the Deepgram key and model that meetings use.
 pub const VOICE_STT_DEEPGRAM: &str = "deepgram";
 
 impl General {
     /// The local model the voice task loads, or [`VOICE_STT_DEEPGRAM`].
+    /// Server code calls `voice::voice_model` instead, which resolves `""` against the models on disk.
     pub fn voice_model(&self) -> &str {
         match self.voice_stt_model.as_str() {
             "" => VOICE_STT_DEFAULT,
@@ -193,6 +197,10 @@ pub fn load_general(db: &Db) -> Result<General> {
             .as_deref()
             .map(|s| s == "true")
             .unwrap_or(true),
+        meeting_bubble: get(db, "general.meeting_bubble")?
+            .as_deref()
+            .map(|s| s == "true")
+            .unwrap_or(true),
         live_recap: get(db, "general.live_recap")?
             .as_deref()
             .map(|s| s == "true")
@@ -235,6 +243,7 @@ pub struct GeneralPatch {
     pub meeting_detection: Option<bool>,
     pub meeting_detection_focus: Option<bool>,
     pub meeting_auto_stop: Option<bool>,
+    pub meeting_bubble: Option<bool>,
     pub live_recap: Option<bool>,
     pub live_recap_placement: Option<RecapPlacement>,
     pub voice_enabled: Option<bool>,
@@ -291,6 +300,13 @@ pub fn save_general_patch(db: &Db, patch: GeneralPatch) -> Result<General> {
             db,
             "general.meeting_auto_stop",
             if d { "true" } else { "false" },
+        )?;
+    }
+    if let Some(b) = patch.meeting_bubble {
+        set(
+            db,
+            "general.meeting_bubble",
+            if b { "true" } else { "false" },
         )?;
     }
     if let Some(r) = patch.live_recap {

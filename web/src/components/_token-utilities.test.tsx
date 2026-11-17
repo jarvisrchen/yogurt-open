@@ -33,6 +33,10 @@ const TOKEN_UTILITIES = [
   ".border-line",
   ".border-blue",
   ".border-straw",
+  ".bg-lemon",
+  ".bg-lemonsoft",
+  ".text-lemonink",
+  ".border-lemonline",
 ];
 
 /** `pop-up` and `slide-in-right` are not asserted until a component uses them (Tailwind emits only utilities that appear in JSX). */

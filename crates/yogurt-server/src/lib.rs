@@ -5,6 +5,7 @@
 mod api;
 mod assets;
 pub mod audio;
+mod bubble;
 mod build_gone;
 mod detect;
 mod dev_proxy;
@@ -174,6 +175,8 @@ pub async fn run_with_config(cfg: RunConfig) -> Result<()> {
     update::spawn(state.clone());
     #[cfg(target_os = "macos")]
     voice::spawn(state.clone());
+    #[cfg(target_os = "macos")]
+    bubble::spawn(state.clone());
 
     let app = routes::router(state.clone());
     tracing::info!(?addr, mode = ?cfg.mode, "yogurt-server starting");

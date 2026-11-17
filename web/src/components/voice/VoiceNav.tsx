@@ -100,12 +100,14 @@ export function Row({
   icon,
   label,
   count,
+  children,
 }: {
   to: string;
   active: boolean;
   icon?: ReactNode;
   label: string;
   count?: number;
+  children?: ReactNode;
 }) {
   return (
     <Link
@@ -116,6 +118,7 @@ export function Row({
       {icon}
       <span className="flex-1 truncate">{label}</span>
       {count != null && <span className="text-caption text-mut tabular-nums font-normal">{formatCount(count)}</span>}
+      {children}
     </Link>
   );
 }

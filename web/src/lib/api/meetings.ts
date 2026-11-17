@@ -402,6 +402,16 @@ export interface ActiveRecording {
   /** Unix ms at which the server stops this recording for silence. Non-null
    *  only during the warning window. */
   auto_stop_at: number | null;
+  /** Unix ms the recording was paused at, or null while it runs. */
+  paused_since: number | null;
+}
+
+/** `POST /api/meetings/:id/paused`: pause or resume the whole recording. */
+export async function setMeetingPaused(id: string, paused: boolean): Promise<void> {
+  await json<{ status: string }>(`/api/meetings/${id}/paused`, {
+    method: "POST",
+    body: JSON.stringify({ paused }),
+  });
 }
 
 export const activeRecordingKey = ["meetings", "active"] as const;

@@ -98,3 +98,23 @@ CLEANUP_PROVIDER=<provider id> RUNS=5 CLEANUP_CASES=~/.cache/yogurt-voice-eval/c
 ```
 
 Compare an edit with the prompt before it, on the built-in model and every provider in use, since a wording that helps one model can cost another a case.
+
+## Transcription accuracy and speed
+
+`scripts/eval/stt-wer/run.sh` scores local transcription models on word error rate, real-time factor, and peak memory, through the app's own `LocalModel::load` and `transcribe`.
+Its harness is `crates/yogurt-stt/examples/stt_eval.rs`, which decodes each file whole, the way a Voice clip decodes, or with `--vad` cuts it with the meeting pipeline's `Segmenter` first and decodes each utterance as a final.
+
+```bash
+scripts/eval/stt-wer/run.sh ~/.cache/yogurt-stt-wer parakeet-v3 parakeet-ultra > table.md
+```
+
+It downloads about 1 GB into the work dir and builds these sets:
+
+- 200 utterances each of LibriSpeech test-clean and test-other, spread over every speaker.
+- 100 sentences each of FLEURS German, Spanish, French, and Italian, one reading per sentence.
+- test-other and FLEURS German mixed with DEMAND cafeteria and office noise at 10, 5, and 0 dB.
+- `scripts/eval/conversation.txt` spoken by three `say` voice pairs into one mono track, clean and with noise at 10 dB, scored whole and through the VAD.
+
+English sets use Whisper's English normalizer, and FLEURS its basic one, so case and punctuation never count as errors.
+The models load from `MODELS_DIR`, `~/.yogurt/models` by default, where Settings downloads them.
+The models run in turn on each set, so other work on the Mac slows both alike, but compare the real-time factors only between the models of one run.

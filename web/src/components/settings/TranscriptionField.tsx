@@ -8,7 +8,7 @@ import {
   type General,
 } from "../../lib/api/settings";
 import { useModels } from "../../lib/api/stt";
-import { PARAKEET_CREDIT, RECOMMENDED_MODEL, type ModelView } from "./modelTypes";
+import { PARAKEET_CREDITS, RECOMMENDED_MODEL, type ModelView } from "./modelTypes";
 import { useVoiceHistory } from "../../lib/api/voice";
 import { beginDownload, showDownloadDialog, useModelDownload } from "../../hooks/useModelDownload";
 import { Button } from "../Button";
@@ -21,7 +21,8 @@ const CAPTION = "text-meta text-mut";
 
 // Relative on purpose, since the wait depends on the Mac. Measured in the design doc's "Which models to use > Transcription".
 const GUIDE: Record<string, { label: string; ram: string }> = {
-  "parakeet-v3": { label: "Fastest, and stays fast during meetings", ram: "1.3 GB" },
+  "parakeet-ultra": { label: "Fast, with the fewest errors in noise", ram: "1.5 GB" },
+  "parakeet-v3": { label: "As fast, with more errors and less memory", ram: "1.3 GB" },
   "small.en": { label: "Fast, catches more names", ram: "1.0 GB" },
   "tiny.en": { label: "Smallest, misses more words", ram: "0.4 GB" },
   "large-v3-turbo": { label: "Most accurate, slowest", ram: "2.2 GB" },
@@ -36,7 +37,7 @@ export function TranscriptionField({ general, deepgramKey }: { general: General;
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
   });
   const meetings = general.voice_stt_model === VOICE_STT_MEETINGS;
-  const resolved = voiceModel(general);
+  const resolved = voiceModel(general, models.data);
   const meetingsMissing = models.data?.some((m) => m.name === general.stt_model && !m.downloaded) ?? false;
 
   return (
@@ -86,7 +87,7 @@ export function TranscriptionField({ general, deepgramKey }: { general: General;
                 {avg != null && (
                   <span className="block text-ink font-medium">On your Mac: {seconds(avg)} s average</span>
                 )}
-                {m.name === "parakeet-v3" && <span className="block">{PARAKEET_CREDIT}</span>}
+                {PARAKEET_CREDITS[m.name] && <span className="block">{PARAKEET_CREDITS[m.name]}</span>}
               </ModelRow>
             );
           })}

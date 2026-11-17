@@ -55,6 +55,40 @@ pub struct ModelSpec {
 
 /// All available models, in the order the pickers list them, recommended first.
 pub const REGISTRY: &[ModelSpec] = &[
+    // Moondream's post-trained v3: same architecture and tokens.txt, new weights.
+    ModelSpec {
+        name: "parakeet-ultra",
+        engine: Engine::Parakeet,
+        size_mb: 670,
+        intel_supported: true,
+        license: "CC-BY-4.0",
+        files: &[
+            ModelFile {
+                filename: "parakeet-tdt-0.6b-ultra-int8-encoder.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/encoder.int8.onnx",
+                mirror_url: Some("https://github.com/jarvisrchen/yogurt-releases/releases/download/models-v1/parakeet-tdt-0.6b-ultra-int8-encoder.int8.onnx"),
+                sha256: "b43072e1b721f18a3df03fcfeb763ff7c4debdf29843598a3aba2f703e2780a3",
+            },
+            ModelFile {
+                filename: "parakeet-tdt-0.6b-ultra-int8-decoder.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/decoder.int8.onnx",
+                mirror_url: Some("https://github.com/jarvisrchen/yogurt-releases/releases/download/models-v1/parakeet-tdt-0.6b-ultra-int8-decoder.int8.onnx"),
+                sha256: "1fab98fe6c12aded87d2da66272cc9e148d0a0044ce3850a12fe56302ec4a922",
+            },
+            ModelFile {
+                filename: "parakeet-tdt-0.6b-ultra-int8-joiner.int8.onnx",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/joiner.int8.onnx",
+                mirror_url: Some("https://github.com/jarvisrchen/yogurt-releases/releases/download/models-v1/parakeet-tdt-0.6b-ultra-int8-joiner.int8.onnx"),
+                sha256: "8a71aaccfdba3d451775507a889afd2257d2e754463fd81095a8c8f290f924c2",
+            },
+            ModelFile {
+                filename: "parakeet-tdt-0.6b-ultra-int8-tokens.txt",
+                url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8/resolve/402e1190ce85b9793118ee223db21fb0d12f52db/tokens.txt",
+                mirror_url: Some("https://github.com/jarvisrchen/yogurt-releases/releases/download/models-v1/parakeet-tdt-0.6b-ultra-int8-tokens.txt"),
+                sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+            },
+        ],
+    },
     ModelSpec {
         name: "parakeet-v3",
         engine: Engine::Parakeet,
@@ -185,6 +219,23 @@ pub const CLEANUP_MODEL: ModelSpec = ModelSpec {
         sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
     }],
 };
+
+/// The model a Voice left on its default transcribes with: parakeet-ultra, or parakeet-v3 while only v3 is downloaded,
+/// so a Mac that has only v3 keeps using it until Ultra is downloaded.
+///
+/// **Blocking:** it can hash a file whose sidecar marker is missing, so async callers wrap it in `spawn_blocking`.
+pub fn voice_default() -> &'static str {
+    let on_disk = |name| lookup(name).is_some_and(is_downloaded);
+    default_for(on_disk("parakeet-ultra"), on_disk("parakeet-v3"))
+}
+
+fn default_for(ultra_downloaded: bool, v3_downloaded: bool) -> &'static str {
+    if !ultra_downloaded && v3_downloaded {
+        "parakeet-v3"
+    } else {
+        "parakeet-ultra"
+    }
+}
 
 /// Only the models the pickers offer.
 pub fn lookup(name: &str) -> Option<&'static ModelSpec> {
@@ -618,7 +669,13 @@ mod tests {
         let names: Vec<_> = REGISTRY.iter().map(|m| m.name).collect();
         assert_eq!(
             names,
-            ["parakeet-v3", "small.en", "tiny.en", "large-v3-turbo"]
+            [
+                "parakeet-ultra",
+                "parakeet-v3",
+                "small.en",
+                "tiny.en",
+                "large-v3-turbo"
+            ]
         );
     }
 
@@ -635,10 +692,20 @@ mod tests {
     }
 
     #[test]
+    fn voice_default_stays_on_v3_only_while_ultra_is_missing() {
+        assert_eq!(default_for(false, true), "parakeet-v3");
+        assert_eq!(default_for(true, true), "parakeet-ultra");
+        assert_eq!(default_for(true, false), "parakeet-ultra");
+        // Neither on disk: Ultra, so the download prompt offers the default.
+        assert_eq!(default_for(false, false), "parakeet-ultra");
+    }
+
+    #[test]
     fn intel_support_flags_match_prd() {
         assert!(lookup("tiny.en").unwrap().intel_supported);
         assert!(lookup("small.en").unwrap().intel_supported);
         assert!(lookup("parakeet-v3").unwrap().intel_supported);
+        assert!(lookup("parakeet-ultra").unwrap().intel_supported);
         assert!(!lookup("large-v3-turbo").unwrap().intel_supported);
     }
 

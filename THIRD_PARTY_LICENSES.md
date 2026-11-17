@@ -51,9 +51,13 @@ Their full license texts are in [`licenses/`](licenses/), and the release ships 
 | nlohmann/json | 3.12.0 | MIT | compiled into `libsherpa-onnx-c-api.dylib` |
 | hclust-cpp (fastcluster) | 2026-02-25 | BSD-2-Clause | compiled into `libsherpa-onnx-c-api.dylib` |
 | Parakeet TDT 0.6B v3 weights | int8 export at `2bda32ec` | CC-BY-4.0 | downloaded on request, never shipped in the release |
+| Parakeet Ultra weights | int8 export at `402e1190` | CC-BY-4.0 | downloaded on request, never shipped in the release |
 
 Parakeet TDT 0.6B v3 by NVIDIA, CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.
 The weights come from [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) through [csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8).
+Parakeet Ultra by Moondream, post-trained from NVIDIA's Parakeet TDT 0.6B v3, CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.
+Its weights come from [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) through [csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8).
+Both are under the license text in `licenses/parakeet-CC-BY-4.0.txt`.
 No library above is GPL or LGPL: sherpa-onnx 2.0.1 builds its TTS without espeak-ng.
 
 ## Website icons

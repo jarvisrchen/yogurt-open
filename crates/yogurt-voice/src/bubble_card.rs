@@ -1,0 +1,256 @@
+//! The hover card's contents, drawn with AppKit's text layout into two images: everything above the transcript, and the transcript lines, which slide on their own when one arrives.
+//! Sizes and colors are the mock's `.upin`, `.pk-head`, `.warn`, `.pk-lab`, `.recap` and `.ln`.
+
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, Bool};
+use objc2::AnyThread;
+use objc2_app_kit::{
+    NSAttributedStringNSExtendedStringDrawing, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSKernAttributeName, NSLineBreakMode,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawingOptions,
+};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::{
+    NSAttributedString, NSDictionary, NSMutableAttributedString, NSNumber, NSString,
+};
+
+use super::Palette;
+use crate::bubble::Card;
+use crate::panel::{bundled_font, Rgba};
+
+pub(super) const CARD_W: f64 = 300.0;
+const SIDE: f64 = 13.0;
+const INNER: f64 = CARD_W - 2.0 * SIDE;
+/// The mock's margin above each block, and below the last one.
+const STEP: f64 = 10.0;
+const LAST: f64 = 2.0;
+
+/// Which warning a box carries, for the icon layer laid over it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Warn {
+    Silent,
+    Muted,
+}
+
+pub(super) struct Painted {
+    pub top: Retained<NSImage>,
+    pub top_h: f64,
+    pub lines: Option<Retained<NSImage>>,
+    pub lines_h: f64,
+    /// The newest line's height with the gap above it: how far the older lines move up when it arrives.
+    pub rise: f64,
+    /// Each warning's icon center, from the top-left of the top image.
+    pub icons: Vec<(Warn, CGPoint)>,
+}
+
+pub(super) struct Fonts {
+    title: Retained<NSFont>,
+    body: Retained<NSFont>,
+    bold: Retained<NSFont>,
+    warn: Retained<NSFont>,
+    label: Retained<NSFont>,
+}
+
+impl Fonts {
+    pub(super) fn new(mono_label: Retained<NSFont>) -> Self {
+        static W500: &[u8] = include_bytes!("../assets/manrope-latin-500-normal.woff");
+        static W700: &[u8] = include_bytes!("../assets/manrope-latin-700-normal.woff");
+        static W800: &[u8] = include_bytes!("../assets/manrope-latin-800-normal.woff");
+        Self {
+            title: bundled_font(W800, 13.5, "Manrope 800"),
+            body: bundled_font(W500, 12.5, "Manrope 500"),
+            bold: bundled_font(W700, 12.5, "Manrope 700"),
+            warn: bundled_font(W500, 12.0, "Manrope 500"),
+            label: mono_label,
+        }
+    }
+}
+
+fn ns(c: Rgba) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(c.0, c.1, c.2, c.3)
+}
+
+/// A run of text with a fixed line height, the way CSS's `line-height` sets it.
+fn run(
+    text: &str,
+    font: &NSFont,
+    c: Rgba,
+    kern: f64,
+    line: f64,
+) -> Retained<NSMutableAttributedString> {
+    let style = NSMutableParagraphStyle::new();
+    style.setMinimumLineHeight(line);
+    style.setMaximumLineHeight(line);
+    style.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+    let color = ns(c);
+    let kern = NSNumber::new_f64(kern);
+    let keys = unsafe {
+        [
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSKernAttributeName,
+            NSParagraphStyleAttributeName,
+        ]
+    };
+    let values: [&AnyObject; 4] = [font, &color, &kern, &style];
+    let attrs = NSDictionary::from_slices(&keys, &values);
+    unsafe {
+        NSMutableAttributedString::initWithString_attributes(
+            NSMutableAttributedString::alloc(),
+            &NSString::from_str(text),
+            Some(&attrs),
+        )
+    }
+}
+
+fn options() -> NSStringDrawingOptions {
+    NSStringDrawingOptions::UsesLineFragmentOrigin
+        | NSStringDrawingOptions::TruncatesLastVisibleLine
+}
+
+/// The height `text` takes in `width`, at most `max_lines` lines of `line` points.
+fn measure(text: &NSAttributedString, width: f64, line: f64, max_lines: usize) -> f64 {
+    let r = text.boundingRectWithSize_options_context(CGSize::new(width, 1e4), options(), None);
+    (r.size.height.ceil())
+        .min(line * max_lines as f64)
+        .max(line)
+}
+
+enum Ink {
+    Text(Retained<NSMutableAttributedString>, CGRect),
+    Rounded(CGRect, f64, Rgba),
+}
+
+/// Draws `inks`, laid out top-down, into an image `height` tall.
+fn image(inks: Vec<Ink>, height: f64) -> Retained<NSImage> {
+    let draw = RcBlock::new(move |_rect: CGRect| -> Bool {
+        for ink in &inks {
+            match ink {
+                Ink::Text(text, r) => text.drawWithRect_options_context(*r, options(), None),
+                Ink::Rounded(r, radius, c) => {
+                    ns(*c).setFill();
+                    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(*r, *radius, *radius)
+                        .fill();
+                }
+            }
+        }
+        Bool::YES
+    });
+    NSImage::imageWithSize_flipped_drawingHandler(CGSize::new(CARD_W, height), true, &draw)
+}
+
+/// Lays out the card for its current contents and the live silence and mute warnings.
+pub(super) fn paint(card: &Card, warns: &[Warn], p: &Palette, f: &Fonts) -> Painted {
+    let body_line = 12.5 * 1.45;
+    let mut inks = Vec::new();
+    let mut icons = Vec::new();
+    let mut y = STEP;
+
+    // `.pk-head`: the title, one line.
+    let head_line = 13.5 * 1.45;
+    let room = INNER;
+    let title = run(&card.title, &f.title, p.ink, 0.0, head_line);
+    let title_w = title
+        .boundingRectWithSize_options_context(CGSize::new(1e4, head_line), options(), None)
+        .size
+        .width
+        .ceil()
+        .min(room);
+    inks.push(Ink::Text(
+        title,
+        CGRect::new(CGPoint::new(SIDE, y), CGSize::new(title_w, head_line)),
+    ));
+    y += head_line + STEP;
+
+    // `.warn`: a honey box with its icon, 8 pt in, and its text 7 pt after the icon.
+    for &w in warns {
+        let text = match w {
+            Warn::Silent => "No system audio for 40 s. Check the output device.",
+            Warn::Muted => "Your mic is muted. The other side is still transcribed.",
+        };
+        let line = 12.0 * 1.45;
+        let t = run(text, &f.warn, p.ink, 0.0, line);
+        let tw = INNER - 8.0 - 14.0 - 7.0 - 8.0;
+        let h = measure(&t, tw, line, 4);
+        inks.push(Ink::Rounded(
+            CGRect::new(CGPoint::new(SIDE, y), CGSize::new(INNER, h + 12.0)),
+            9.0,
+            p.warn_bg,
+        ));
+        icons.push((w, CGPoint::new(SIDE + 8.0 + 7.0, y + 6.0 + 1.0 + 7.0)));
+        inks.push(Ink::Text(
+            t,
+            CGRect::new(
+                CGPoint::new(SIDE + 8.0 + 14.0 + 7.0, y + 6.0),
+                CGSize::new(tw, h),
+            ),
+        ));
+        y += h + 12.0 + STEP;
+    }
+
+    // `.pk-lab` and `.recap`: Pro's two newest bullets under a mono label with the update's age.
+    let label_line = 10.5 * 1.45;
+    let label = |text: &str| {
+        run(
+            &text.to_uppercase(),
+            &f.label,
+            p.muted,
+            10.5 * 0.05,
+            label_line,
+        )
+    };
+
+    if card.lines.is_empty() {
+        return Painted {
+            top: image(inks, y - STEP + LAST),
+            top_h: y - STEP + LAST,
+            lines: None,
+            lines_h: 0.0,
+            rise: 0.0,
+            icons,
+        };
+    }
+    inks.push(Ink::Text(
+        label("Transcript"),
+        CGRect::new(CGPoint::new(SIDE, y), CGSize::new(INNER, label_line)),
+    ));
+    y += label_line + 4.0;
+    let top = image(inks, y);
+
+    // `.ln`: "Me" in the mic's color or "Them" muted, then the words, at most two lines each.
+    let mut lines = Vec::new();
+    let mut ly = 0.0;
+    let mut rise = 0.0;
+    for (i, line) in card.lines.iter().enumerate() {
+        let (who, c) = if line.me {
+            ("Me", p.mic)
+        } else {
+            ("Them", p.muted)
+        };
+        let t = run(who, &f.bold, c, 0.0, body_line);
+        t.appendAttributedString(&run(
+            &format!("\u{2006}\u{2006}{}", line.text),
+            &f.body,
+            p.ink,
+            0.0,
+            body_line,
+        ));
+        let h = measure(&t, INNER, body_line, 2);
+        lines.push(Ink::Text(
+            t,
+            CGRect::new(CGPoint::new(SIDE, ly), CGSize::new(INNER, h)),
+        ));
+        ly += h + if i + 1 < card.lines.len() { 4.0 } else { 0.0 };
+        rise = h + 4.0;
+    }
+    let lines_h = ly + LAST;
+    Painted {
+        top,
+        top_h: y,
+        lines: Some(image(lines, lines_h)),
+        lines_h,
+        rise,
+        icons,
+    }
+}

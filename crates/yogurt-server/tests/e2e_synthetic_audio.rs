@@ -47,6 +47,7 @@ fn build_test_state(bind_port: u16) -> (AppState, String, tempfile::TempDir) {
         detect: Default::default(),
         import: Default::default(),
         voice: Default::default(),
+        bubble: Default::default(),
         pro: yogurt_server::entitlements::hooks(),
     };
     (state, token_str, tmp)

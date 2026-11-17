@@ -68,6 +68,7 @@ pub fn router(state: AppState) -> Router {
             post(switch_meeting_audio_device),
         )
         .route("/api/meetings/{id}/mic-muted", post(set_meeting_mic_muted))
+        .route("/api/meetings/{id}/paused", post(set_meeting_paused))
         .route("/api/meetings/{id}/enhance", post(crate::enhance::enhance))
         .route(
             "/api/meetings/{id}/chat",
@@ -267,7 +268,7 @@ async fn dismiss_detected_meeting(State(state): State<AppState>) -> impl IntoRes
 
 /// The currently-recording meeting, for the "Return to recording" pill.
 /// Polled every 5s, so it returns `200` with `null` rather than a noisy `404`.
-async fn active_recording(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn active_recording(State(state): State<AppState>) -> impl IntoResponse {
     let Some(id) = state.meetings.active_recording().await else {
         return (StatusCode::OK, Json(Value::Null)).into_response();
     };
@@ -284,15 +285,18 @@ async fn active_recording(State(state): State<AppState>) -> impl IntoResponse {
         None => ("Recording".to_string(), now_unix_ms()),
     };
     // Read the engine off the `Meeting`, not Settings, which may have changed mid-recording.
-    let (stt, mic_muted, mic_device, last_audible) = match state.meetings.get(&id).await {
-        Some(m) => (
-            *m.stt_engine.lock().await,
-            *m.mic_muted.lock().await,
-            m.mic_device.lock().await.clone(),
-            Some(m.last_audible_ms.load(std::sync::atomic::Ordering::Relaxed)),
-        ),
-        None => (None, false, String::new(), None),
-    };
+    let (stt, mic_muted, mic_device, last_audible, paused_since) =
+        match state.meetings.get(&id).await {
+            Some(m) => (
+                *m.stt_engine.lock().await,
+                *m.mic_muted.lock().await,
+                m.mic_device.lock().await.clone(),
+                Some(m.last_audible_ms.load(std::sync::atomic::Ordering::Relaxed)),
+                Some(m.paused_since_ms.load(std::sync::atomic::Ordering::Relaxed))
+                    .filter(|&t| t != 0),
+            ),
+            None => (None, false, String::new(), None, None),
+        };
     let auto_stop_at = last_audible
         .filter(|_| crate::detect::auto_stop_enabled(&state.db))
         .and_then(|last| {
@@ -308,6 +312,7 @@ async fn active_recording(State(state): State<AppState>) -> impl IntoResponse {
         "mic_muted": mic_muted,
         "mic_device": mic_device,
         "auto_stop_at": auto_stop_at,
+        "paused_since": paused_since,
     });
     if let Some(engine) = stt {
         body["stt"] = json!(engine);
@@ -419,6 +424,37 @@ async fn set_meeting_mic_muted(
         Err(SwitchDeviceError::Device(msg)) => {
             (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct SetPausedRequest {
+    paused: bool,
+}
+
+/// `POST /api/meetings/:id/paused`: pause or resume the whole recording. Both channels go silent, and capture stays open so resume is instant.
+async fn set_meeting_paused(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetPausedRequest>,
+) -> impl IntoResponse {
+    use crate::meetings::SwitchDeviceError;
+    match state.meetings.set_paused(&id, body.paused).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "status": "ok", "paused": body.paused })),
+        )
+            .into_response(),
+        Err(SwitchDeviceError::NotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "meeting not found" })),
+        )
+            .into_response(),
+        Err(SwitchDeviceError::NotRecording | SwitchDeviceError::Device(_)) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "meeting is not currently recording" })),
+        )
+            .into_response(),
     }
 }
 

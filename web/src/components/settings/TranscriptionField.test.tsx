@@ -52,6 +52,7 @@ describe("TranscriptionField", () => {
     vi.mocked(settingsApi.patch).mockResolvedValue({} as General);
     vi.mocked(startDownload).mockResolvedValue();
     models = [
+      model("parakeet-ultra", 670, false),
       model("parakeet-v3", 670, false),
       model("small.en", 487, true),
       model("tiny.en", 75, true),
@@ -59,18 +60,42 @@ describe("TranscriptionField", () => {
     ];
   });
 
-  it("picks Parakeet by default, marks it Recommended, and labels every model without seconds", async () => {
+  it("picks Parakeet Ultra by default, marks it Recommended, and labels every model without seconds", async () => {
     renderField({ stt_model: "tiny.en" });
-    expect(await screen.findByRole("radio", { name: /^parakeet-v3/ })).toBeChecked();
+    expect(await screen.findByRole("radio", { name: /^parakeet-ultra/ })).toBeChecked();
     expect(screen.getByRole("radio", { name: /Same as meetings/ })).not.toBeChecked();
     expect(screen.getByText("Now tiny.en")).toBeInTheDocument();
     expect(screen.getAllByText("Recommended")).toHaveLength(1);
-    expect(screen.getByText("Fastest, and stays fast during meetings")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^parakeet-ultra/ })).toHaveAccessibleName(/Recommended/);
+    expect(screen.getByText("Fast, with the fewest errors in noise")).toBeInTheDocument();
     expect(screen.getByText("Fast, catches more names")).toBeInTheDocument();
-    expect(screen.getByText("670 MB download")).toBeInTheDocument();
-    expect(screen.getByText("1.3 GB RAM")).toBeInTheDocument();
+    expect(screen.getAllByText("670 MB download")).toHaveLength(2);
+    expect(screen.getByText("1.5 GB RAM")).toBeInTheDocument();
     expect(screen.getByText(/Parakeet TDT 0\.6B v3 by NVIDIA, CC BY 4\.0/)).toBeInTheDocument();
     expect(screen.queryByText(/On your Mac/)).toBeNull();
+  });
+
+  it("credits each Parakeet on its own row", async () => {
+    renderField();
+    const ultra = await screen.findByRole("radio", { name: /^parakeet-ultra/ });
+    expect(ultra).toHaveAccessibleName(/Moondream.*NVIDIA.*CC BY 4\.0.*sherpa-onnx/);
+    expect(screen.getByRole("radio", { name: /^parakeet-v3/ })).not.toHaveAccessibleName(/Moondream/);
+  });
+
+  it("keeps a Voice on the default on v3 while only v3 is downloaded, and moves it once Ultra is", () => {
+    models = [model("parakeet-ultra", 670, false), model("parakeet-v3", 670, true)];
+    const { unmount } = renderField();
+    expect(screen.getByRole("radio", { name: /^parakeet-v3/ })).toBeChecked();
+    unmount();
+    models = [model("parakeet-ultra", 670, true), model("parakeet-v3", 670, true)];
+    renderField();
+    expect(screen.getByRole("radio", { name: /^parakeet-ultra/ })).toBeChecked();
+  });
+
+  it("never moves a Voice that picked v3", () => {
+    models = [model("parakeet-ultra", 670, true), model("parakeet-v3", 670, true)];
+    renderField({ voice_stt_model: "parakeet-v3" });
+    expect(screen.getByRole("radio", { name: /^parakeet-v3/ })).toBeChecked();
   });
 
   it("never lists a retired model", () => {
@@ -109,10 +134,10 @@ describe("TranscriptionField", () => {
   });
 
   it("keeps the default checked while it downloads", () => {
-    models = [{ ...model("parakeet-v3", 670, false), downloading: true }];
+    models = [{ ...model("parakeet-ultra", 670, false), downloading: true }];
     renderField();
-    expect(screen.getByRole("radio", { name: /^parakeet-v3/ })).toBeChecked();
-    expect(screen.getByRole("button", { name: "Show download progress for parakeet-v3" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^parakeet-ultra/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Show download progress for parakeet-ultra" })).toBeInTheDocument();
   });
 
   it("disables Same as meetings while the model it follows is missing", () => {

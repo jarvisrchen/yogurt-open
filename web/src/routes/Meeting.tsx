@@ -6,6 +6,7 @@ import { TranscriptDock, type DockView } from "../components/TranscriptDock";
 import { AskExperience } from "../components/AskExperience";
 import { MicDevicePicker } from "../components/MicDevicePicker";
 import { MicMuteToggle } from "../components/MicMuteToggle";
+import { PauseToggle } from "../components/PauseToggle";
 import { buttonClassName } from "../components/Button";
 import { CopyUrlButton } from "../components/CopyUrlButton";
 import { SilenceStopBanner } from "../components/SilenceStopBanner";
@@ -145,6 +146,10 @@ export function Meeting() {
   // (no POST /start) — that would 400 "already started" and paint a
   // spurious error banner for a meeting that's already recording fine.
   const activeRecording = useActiveRecording();
+  const paused =
+    recording &&
+    activeRecording.data?.id === meetingId &&
+    activeRecording.data.paused_since != null;
   useEffect(() => {
     if (meetingId && activeRecording.data?.id === meetingId) {
       setRecording(true);
@@ -164,7 +169,7 @@ export function Meeting() {
     }
     if (sawActiveRef.current === meetingId && recording && !stoppingRef.current) {
       sawActiveRef.current = null;
-      void endMeeting();
+      void endMeeting(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingId, activeRecording.data, recording]);
@@ -279,7 +284,6 @@ export function Meeting() {
       }
       sawActiveRef.current = null;
       setRecording(true);
-      stoppingRef.current = false;
       // /start stamps started_at + stt_engine on the row; refetch so the
       // meta pills reflect the real engine instead of the poll fallback.
       void queryClient.invalidateQueries({ queryKey: meetingKey(id) });
@@ -294,8 +298,9 @@ export function Meeting() {
     }
   }
 
-  async function stopRecording() {
-    if (!meetingId) return;
+  /** False when the stop failed, with the error already shown. */
+  async function stopRecording(): Promise<boolean> {
+    if (!meetingId) return false;
     setErrorMessage(null);
     stoppingRef.current = true;
     try {
@@ -304,7 +309,7 @@ export function Meeting() {
         const body = (await res.json().catch(() => ({}))) as ServerError;
         setErrorMessage(body.error ?? `Failed to stop recording (${res.status})`);
         stoppingRef.current = false;
-        return;
+        return false;
       }
       sawActiveRef.current = null;
       setRecording(false);
@@ -317,9 +322,11 @@ export function Meeting() {
       // still races the in-flight refetch that caused the staleness.
       queryClient.setQueryData(activeRecordingKey, null);
       void queryClient.invalidateQueries({ queryKey: meetingKey(meetingId) });
+      return true;
     } catch (e) {
       stoppingRef.current = false;
       setErrorMessage(e instanceof Error ? e.message : "Failed to stop recording");
+      return false;
     }
   }
 
@@ -403,19 +410,19 @@ export function Meeting() {
   // POST itself (task 2, "start streaming immediately on End meeting") so
   // the user sees the streamed preview instead of staring at a busy button
   // for the whole round-trip.
-  async function endMeeting() {
+  async function endMeeting(serverStopped = false) {
     if (!meetingId || !token) return;
     setErrorMessage(null);
     setEnhancing(true);
     try {
       await flushNotes();
-      if (recording) {
-        try {
-          await stopRecording();
-        } catch {
-          // Non-fatal - proceed to the post view; MeetingPost's enhance
-          // POST doesn't depend on the stop call having succeeded.
-        }
+      // A failed stop stays here with its error: the post page would bounce
+      // straight back while the recording is still active. Once the server has
+      // already ended it there is nothing to stop, and after a server restart
+      // the stop answers "meeting not found".
+      if (recording && !serverStopped && !(await stopRecording())) {
+        setEnhancing(false);
+        return;
       }
       navigate(`/meeting/${meetingId}/post`, {
         state: {
@@ -456,8 +463,8 @@ export function Meeting() {
           {recording && (
             <span
               aria-hidden
-              className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--color-straw)] ml-1 animate-recpulse"
-              title="recording"
+              className={`inline-block w-1.5 h-1.5 rounded-full ml-1 ${paused ? "bg-mut" : "bg-[var(--color-straw)] animate-recpulse"}`}
+              title={paused ? "paused" : "recording"}
             />
           )}
         </Link>
@@ -491,19 +498,17 @@ export function Meeting() {
                 </button>
               )}
               {meetingId && recording && (
-                <button
-                  type="button"
-                  onClick={stopRecording}
-                  className={buttonClassName("primary")}
+                <PauseToggle
+                  meetingId={meetingId}
+                  paused={paused}
+                  onError={(m) => setErrorMessage(m)}
                   style={recordMorph}
-                >
-                  Stop recording
-                </button>
+                />
               )}
               {meetingId && (
                 <button
                   type="button"
-                  onClick={endMeeting}
+                  onClick={() => endMeeting()}
                   disabled={enhancing}
                   aria-busy={enhancing}
                   data-testid="end-meeting"

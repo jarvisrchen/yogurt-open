@@ -3,6 +3,7 @@
 // medium.en and large-v3 come back only as `retired`, while a copy is still on disk.
 export type ModelName =
   | "parakeet-v3"
+  | "parakeet-ultra"
   | "small.en"
   | "tiny.en"
   | "large-v3-turbo"
@@ -10,11 +11,15 @@ export type ModelName =
   | "large-v3";
 
 /** The model both pickers mark Recommended, and the default for Voice and new installs. */
-export const RECOMMENDED_MODEL = "parakeet-v3";
+export const RECOMMENDED_MODEL = "parakeet-ultra";
 
 /** CC BY 4.0 asks for credit, the license, and a note that the weights were changed. */
-export const PARAKEET_CREDIT =
-  "Parakeet TDT 0.6B v3 by NVIDIA, CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.";
+export const PARAKEET_CREDITS: Record<string, string> = {
+  "parakeet-v3":
+    "Parakeet TDT 0.6B v3 by NVIDIA, CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.",
+  "parakeet-ultra":
+    "Parakeet Ultra by Moondream, post-trained from NVIDIA's Parakeet TDT 0.6B v3, CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.",
+};
 
 export interface ModelView {
   name: ModelName;

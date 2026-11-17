@@ -147,13 +147,15 @@ Switch under **Settings -> Transcription**, which also downloads the local model
 
 | Model | Size | Notes |
 | --- | --- | --- |
-| `parakeet-v3` | 670&nbsp;MB | Recommended, and the default local model. Multilingual and fast. |
+| `parakeet-ultra` | 670&nbsp;MB | Recommended, and the default local model. Parakeet v3 retrained by Moondream: about as fast, with fewer errors, most of all in noise. Multilingual. |
+| `parakeet-v3` | 670&nbsp;MB | The previous default. About as fast as Ultra, with more errors and about 200&nbsp;MB less memory. |
 | `small.en` | 487&nbsp;MB | English only. Fast, and caught more personal names than Parakeet in testing. |
 | `tiny.en` | 75&nbsp;MB | English only. Smallest and roughest, good for checking that local works. |
 | `large-v3-turbo` | 1.6&nbsp;GB | Multilingual. Most accurate and slowest, and may not keep up with live speech on an Intel Mac. |
 
 Yogurt checks the SHA-256 of every model file before it uses it.
 Parakeet TDT 0.6B v3 is by NVIDIA under CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.
+Parakeet Ultra is by Moondream, post-trained from NVIDIA's Parakeet TDT 0.6B v3, under CC BY 4.0, converted to ONNX and quantized to int8 by the sherpa-onnx project.
 
 <details>
 <summary>When huggingface.co is blocked</summary>

@@ -23,12 +23,17 @@ function meeting(over: Partial<MeetingSummary> = {}): MeetingSummary {
   };
 }
 
-function renderCard(m: MeetingSummary, activeId?: string | null, archived = false) {
+function renderCard(
+  m: MeetingSummary,
+  activeId?: string | null,
+  archived = false,
+  livePaused = false,
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <MeetingCard meeting={m} activeId={activeId} archived={archived} />
+        <MeetingCard meeting={m} activeId={activeId} archived={archived} livePaused={livePaused} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -43,6 +48,14 @@ describe("MeetingCard — live-recording routing", () => {
 
     expect(screen.getByRole("link")).toHaveAttribute("href", "/meeting/live-1");
     expect(screen.getByText("Recording")).toBeInTheDocument();
+  });
+
+  it("says Paused, without the pulse, while the active recording is paused", () => {
+    const { container } = renderCard(meeting({ id: "live-1" }), "live-1", false, true);
+
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.queryByText("Recording")).toBeNull();
+    expect(container.querySelector(".animate-recpulse")).toBeNull();
   });
 
   it("links to /post and shows normal meta when it's not the active recording", () => {

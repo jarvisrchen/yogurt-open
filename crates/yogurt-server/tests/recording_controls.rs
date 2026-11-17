@@ -1,9 +1,12 @@
-//! REST contract tests for `POST /api/meetings/:id/mic-muted`, mirroring `audio_device_switch.rs`.
+//! REST contract tests for the controls on a live recording, `POST /api/meetings/:id/mic-muted` and `/paused`, mirroring `audio_device_switch.rs`.
 //! No audio hardware or Screen Recording permission: only the not-found, not-recording, and no-token branches.
 
 use std::time::Duration;
 
 use yogurt_server::{run_with_config, Mode, RunConfig};
+
+/// Each control's route and a request body that turns it on.
+const CONTROLS: [(&str, &str); 2] = [("mic-muted", "muted"), ("paused", "paused")];
 
 async fn spawn_server() -> (
     std::net::SocketAddr,
@@ -55,14 +58,16 @@ async fn it_returns_404_for_unknown_meeting() {
     let (addr, token, handle, _tmp) = spawn_server().await;
 
     let random_id = uuid::Uuid::now_v7();
-    let resp = reqwest::Client::new()
-        .post(format!("http://{addr}/api/meetings/{random_id}/mic-muted"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "muted": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 404);
+    for (route, field) in CONTROLS {
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/api/meetings/{random_id}/{route}"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ field: true }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{route}");
+    }
 
     handle.abort();
 }
@@ -84,30 +89,34 @@ async fn it_returns_409_when_meeting_is_not_recording() {
     let id = created["id"].as_str().unwrap();
 
     // /start needs TCC permissions, so the meeting stays not recording.
-    let resp = client
-        .post(format!("http://{addr}/api/meetings/{id}/mic-muted"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "muted": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 409);
+    for (route, field) in CONTROLS {
+        let resp = client
+            .post(format!("http://{addr}/api/meetings/{id}/{route}"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ field: true }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 409, "{route}");
+    }
 
     handle.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn it_rejects_unauthenticated_mute_requests() {
+async fn it_rejects_unauthenticated_requests() {
     let (addr, _token, handle, _tmp) = spawn_server().await;
 
     let random_id = uuid::Uuid::now_v7();
-    let resp = reqwest::Client::new()
-        .post(format!("http://{addr}/api/meetings/{random_id}/mic-muted"))
-        .json(&serde_json::json!({ "muted": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 403);
+    for (route, field) in CONTROLS {
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/api/meetings/{random_id}/{route}"))
+            .json(&serde_json::json!({ field: true }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 403, "{route}");
+    }
 
     handle.abort();
 }

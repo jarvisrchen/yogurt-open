@@ -1,6 +1,6 @@
 import { type ButtonHTMLAttributes, type ReactNode } from "react";
 
-type Variant = "primary" | "secondary" | "ghost" | "warn" | "on";
+type Variant = "primary" | "secondary" | "ghost" | "warn" | "on" | "pro";
 type Size = "md" | "sm";
 
 interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> {
@@ -45,6 +45,8 @@ const VARIANT: Record<Variant, string> = {
   ghost: "bg-transparent border-transparent text-mut hover:text-ink hover:bg-blsoft/50",
   warn: "bg-straw border-straw text-white hover:opacity-90 active:opacity-100",
   on: "bg-mtsoft text-matcha border border-matcha hover:opacity-90 active:opacity-100",
+  /** Get Pro, the one button that leaves the app to buy something. */
+  pro: "bg-lemon border-lemon text-lemonink shadow-button-lemon hover:opacity-90 active:opacity-100",
 };
 
 /** Variant classes for an element that must be an `<a>` (e.g. `x-apple.systempreferences:`) but should look like `<Button>`. */

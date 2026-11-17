@@ -43,6 +43,7 @@ yogurt ctl meeting show|summary|transcript <id|url|last>
 yogurt ctl meeting enhance <id|url|last>
 yogurt ctl meeting keep new|previous <id|url|last>  # after a re-enhance, keep its notes or put back the ones it replaced
 yogurt ctl meeting mute on|off [<id|url|last>]     # pauses/resumes the mic; bare form targets whatever is recording
+yogurt ctl meeting pause on|off [<id|url|last>]    # pauses/resumes the whole recording; bare form targets whatever is recording
 yogurt ctl meeting search <query> [--limit N]      # full-text: title, notes, transcript
 yogurt ctl meeting delete <id|url|last> [--dry-run] [--yes]
 yogurt ctl detect [dismiss]                        # what meeting detection currently sees

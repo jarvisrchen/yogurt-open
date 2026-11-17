@@ -3,8 +3,8 @@
 //! the LLM, and gates every bump of either crate.
 //! Parakeet brings a third native runtime, sherpa-onnx with onnxruntime, so it gets the same check against whisper.
 //!
-//! The models come from `YOGURT_TEST_WHISPER`, `YOGURT_TEST_GGUF`, and `YOGURT_TEST_PARAKEET` (the encoder, with the other files beside it),
-//! or else the downloaded small.en, the built-in cleanup model, and Parakeet v3:
+//! The models come from `YOGURT_TEST_WHISPER`, `YOGURT_TEST_GGUF`, `YOGURT_TEST_PARAKEET`, and `YOGURT_TEST_PARAKEET_ULTRA` (each Parakeet's encoder, with the other files beside it),
+//! or else the downloaded small.en, the built-in cleanup model, Parakeet v3, and Parakeet Ultra:
 //!
 //! ```sh
 //! cargo test -p yogurt-server --test local_models -- --ignored --nocapture
@@ -202,5 +202,50 @@ async fn whisper_spells_a_meeting_the_dictionarys_way() {
     assert!(
         finals.contains("Marivex") && finals.contains("Zorbal"),
         "{finals}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Parakeet v3 on disk"]
+async fn parakeet_v3_transcribes_a_meeting() {
+    parakeet_transcribes_a_meeting("parakeet-v3", "YOGURT_TEST_PARAKEET").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs Parakeet Ultra on disk"]
+async fn parakeet_ultra_transcribes_a_meeting() {
+    parakeet_transcribes_a_meeting("parakeet-ultra", "YOGURT_TEST_PARAKEET_ULTRA").await;
+}
+
+/// The dictation through the meeting pipeline's VAD and final decode, as system audio.
+async fn parakeet_transcribes_a_meeting(name: &str, var: &str) {
+    use yogurt_stt::{AudioChunk, Channel, Stt};
+    let spec = models::lookup(name).unwrap();
+    let parakeet = LocalModel::load(spec, model(var, spec)).unwrap();
+    let (audio_tx, audio_rx) = tokio::sync::broadcast::channel(16);
+    let (txn, mut events) = tokio::sync::broadcast::channel(64);
+    let session = tokio::spawn(async move { parakeet.start(audio_rx, txn, &[]).await });
+    let mut pcm = dictation();
+    pcm.extend([0i16; 16_000]);
+    audio_tx
+        .send(AudioChunk {
+            channel: Channel::System,
+            samples: pcm,
+            ts_ms: 0,
+        })
+        .unwrap();
+    drop(audio_tx);
+    session.await.unwrap().unwrap();
+    let mut finals = String::new();
+    while let Ok(ev) = events.recv().await {
+        if ev.is_final {
+            finals.push_str(&ev.text);
+        }
+    }
+    eprintln!("{name} in a meeting: {finals}");
+    let words = finals.to_lowercase();
+    assert!(
+        words.contains("deck") && words.contains("wednesday"),
+        "{name}: {finals}"
     );
 }
