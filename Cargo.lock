@@ -4413,7 +4413,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-audio"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "block2",
@@ -4463,7 +4463,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-db"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4477,7 +4477,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-granola"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "chrono",
  "reqwest",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-llm"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4511,7 +4511,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-notes"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -4525,7 +4525,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-prompts"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -4534,7 +4534,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-server"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4572,7 +4572,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-stt"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4596,7 +4596,7 @@ dependencies = [
 
 [[package]]
 name = "yogurt-voice"
-version = "4.2.0"
+version = "4.2.1"
 dependencies = [
  "block2",
  "dispatch2",

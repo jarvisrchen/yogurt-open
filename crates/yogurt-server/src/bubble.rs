@@ -463,20 +463,26 @@ mod tests {
 
     #[test]
     fn a_card_shown_mid_meeting_starts_from_the_stored_lines() {
+        let n = yogurt_voice::bubble::CARD_LINES as u64 + 1;
+        let segments: Vec<_> = (1..=n)
+            .map(|i| serde_json::json!({"ts_ms": i, "channel": if i % 2 == 0 { "me" } else { "them" }, "text": format!("Line {i}")}))
+            .collect();
         let row = Row {
             started_at: 0,
             title: String::new(),
-            transcript_json: r#"[{"ts_ms":1,"channel":"them","text":"One"},{"ts_ms":2,"channel":"me","text":"Two"},{"ts_ms":3,"channel":"them","text":"Three"},{"ts_ms":4,"channel":"me","text":"Four"}]"#.into(),
+            transcript_json: serde_json::to_string(&segments).unwrap(),
         };
         let (card, seeded_to) = seeded(&row);
-        assert_eq!(seeded_to, [Some(3), Some(4)]);
+        assert_eq!(seeded_to, [Some(n), Some(n - 1)]);
         assert_eq!(card.title, "Recording");
         assert_eq!(
             card.lines
                 .iter()
-                .map(|l| (l.me, l.text.as_str()))
+                .map(|l| (l.me, l.text.clone()))
                 .collect::<Vec<_>>(),
-            [(true, "Two"), (false, "Three"), (true, "Four")],
+            (2..=n)
+                .map(|i| (i % 2 == 0, format!("Line {i}")))
+                .collect::<Vec<_>>(),
         );
         assert!(seeded(&Row {
             transcript_json: "not json".into(),

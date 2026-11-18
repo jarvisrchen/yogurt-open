@@ -19,8 +19,8 @@ pub const SILENT_AFTER: Duration = Duration::from_secs(40);
 /// The peak below which a frame counts as silence, for the honey bars and the meeting's silence auto-stop.
 pub const AUDIBLE_PEAK: f32 = 0.02;
 
-/// Transcript lines the card keeps, newest last.
-pub const CARD_LINES: usize = 3;
+/// Transcript lines the card keeps, newest last: enough that the shortest lines still fill its window and one more scrolls off.
+pub const CARD_LINES: usize = 8;
 
 /// What the hover card shows above the pill.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -51,6 +51,11 @@ pub struct ProCard {
 }
 
 impl Card {
+    /// The [`added`](Self::added) number of the oldest line held, which keys it from arrival to drop.
+    pub fn first_key(&self) -> u64 {
+        (self.added + 1).saturating_sub(self.lines.len() as u64)
+    }
+
     /// Adds one transcript event as the page's dock does: a partial replaces its channel's unfinished line, anything else is a new line.
     pub fn merge(&mut self, me: bool, text: &str, done: bool) {
         let text = text.trim();
@@ -154,12 +159,13 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_replaces_its_channels_open_line_and_the_card_keeps_three() {
+    fn a_partial_replaces_its_channels_open_line_and_the_card_keeps_the_newest() {
         let mut c = Card::default();
         c.merge(false, "If we cut the", false);
         c.merge(false, "If we cut the map tutorial", true);
         assert_eq!(c.lines.len(), 1);
         assert_eq!(c.added, 1);
+        assert_eq!(c.first_key(), 1);
         c.merge(true, "Two screens", false);
         c.merge(false, "Yes, but", false);
         c.merge(true, "Two screens works.", true);
@@ -171,14 +177,26 @@ mod tests {
                 "Yes, but"
             ],
         );
-        c.merge(true, "Good.", true);
+        for n in 0..CARD_LINES - 2 {
+            c.merge(true, &format!("Line {n}."), true);
+        }
         assert_eq!(c.lines.len(), CARD_LINES);
         assert_eq!(c.lines[0].text, "Two screens works.");
-        assert_eq!(c.added, 4);
+        assert_eq!(c.added, CARD_LINES as u64 + 1);
+        assert_eq!(
+            c.first_key(),
+            2,
+            "the first line dropped, so the oldest held is the second added"
+        );
         c.merge(true, "   ", true);
-        assert_eq!(c.added, 4, "blank text adds nothing");
+        assert_eq!(c.added, CARD_LINES as u64 + 1, "blank text adds nothing");
         c.merge(true, "Good.", true);
-        assert_eq!(c.added, 5, "the same words said twice show twice");
+        c.merge(true, "Good.", true);
+        assert_eq!(
+            c.added,
+            CARD_LINES as u64 + 3,
+            "the same words said twice show twice"
+        );
     }
 
     #[test]

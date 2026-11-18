@@ -17,7 +17,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "libc", "objc2-core-foundation", "objc2-quartz-core", "NSAccessibility", "NSAnimation", "NSAnimationContext", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSColor", "NSCursor", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics", "NSImage", "NSPanel", "NSParagraphStyle", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSStringDrawing", "NSText", "NSTrackingArea", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFMachPort", "CFRunLoop"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColor", "CGEvent", "CGEventTypes", "CGPath", "CGRemoteOperation"] }
-objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CAAnimation", "CABase", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CAShapeLayer", "CATextLayer", "CATransaction"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CAAnimation", "CABase", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CAGradientLayer", "CAShapeLayer", "CATextLayer", "CATransaction"] }
 block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "block2", "objc2"] }
 

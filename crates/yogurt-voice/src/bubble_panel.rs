@@ -15,8 +15,8 @@ use objc2_app_kit::{
     NSAnimatablePropertyContainer, NSAnimationContext, NSAppearance, NSAppearanceCustomization,
     NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
     NSBackingStoreType, NSColor, NSCursor, NSEvent, NSFloatingWindowLevel, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName, NSPanel, NSResponder,
-    NSRunningApplication, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSKernAttributeName, NSPanel,
+    NSResponder, NSRunningApplication, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask, NSWorkspace,
 };
@@ -27,8 +27,8 @@ use objc2_foundation::{
     NSString, NSURL,
 };
 use objc2_quartz_core::{
-    CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, CATextLayer,
-    CATransaction,
+    CABasicAnimation, CAGradientLayer, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer,
+    CATextLayer, CATransaction,
 };
 
 #[path = "bubble_card.rs"]
@@ -273,9 +273,23 @@ fn animate(layer: &CALayer, key: &str, from: f64, to: f64, secs: f64) {
     }
 }
 
+/// Slides `layer` from `by` points off to where it is now, added onto any slide still running, so a line that grows mid-slide never jumps back.
+fn shift(layer: &CALayer, by: f64) {
+    let a = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("position.y")));
+    unsafe {
+        a.setFromValue(Some(&NSNumber::new_f64(by)));
+        a.setToValue(Some(&NSNumber::new_f64(0.0)));
+    }
+    a.setAdditive(true);
+    a.setDuration(0.26);
+    a.setTimingFunction(Some(&ease_pop()));
+    // No key, so a second slide runs beside the first instead of replacing it.
+    layer.addAnimation_forKey(&a, None);
+}
+
 /// A Core Foundation object as the Objective-C object it is toll-free bridged to.
-fn cf_object(path: &CGPath) -> &AnyObject {
-    unsafe { &*(path as *const CGPath).cast::<AnyObject>() }
+fn cf_object<T: objc2_core_foundation::Type>(cf: &T) -> &AnyObject {
+    unsafe { &*(cf as *const T).cast::<AnyObject>() }
 }
 
 fn attributed(text: &str, font: &NSFont, c: Rgba, kern: f64) -> Retained<NSAttributedString> {
@@ -517,7 +531,11 @@ struct Bubble {
     acts: Retained<CALayer>,
     card_clip: Retained<CALayer>,
     card_top: Retained<CALayer>,
-    card_lines: Retained<CALayer>,
+    /// Clips the transcript's line layers, and fades the words that run past its top.
+    card_window: Retained<CALayer>,
+    card_fade: Retained<CAGradientLayer>,
+    /// One layer per transcript line, oldest first, keyed as [`card::Painted::lines`] keys them, with the top it reaches in the window, which a wrap moves while its bottom stays put.
+    card_rows: RefCell<Vec<(u64, Retained<CALayer>, f64)>>,
     /// Holds both card images, so a slide moves them as one and they never drift apart.
     card_body: Retained<CALayer>,
     /// The warning boxes' icons, laid over the card's image: the triangle and the mic with its slash.
@@ -529,7 +547,6 @@ struct Bubble {
     top_h: Cell<f64>,
     /// The recap age the card was painted with.
     painted_age: RefCell<Option<String>>,
-    rise: Cell<f64>,
     pause_bg: Retained<CALayer>,
     mute_bg: Retained<CALayer>,
     pause_icon: Retained<CAShapeLayer>,
@@ -702,11 +719,31 @@ impl Bubble {
         card_clip.setOpacity(0.0);
         face.addSublayer(&card_clip);
         let card_top = CALayer::new();
-        let card_lines = CALayer::new();
+        let card_window = CALayer::new();
+        card_window.setMasksToBounds(true);
+        let card_fade = CAGradientLayer::new();
+        let (clear, opaque) = (color(hex(0, 0.0)), color(hex(0, 1.0)));
+        unsafe {
+            card_fade.setColors(Some(&NSArray::from_slice(&[
+                cf_object(&*clear),
+                cf_object(&*opaque),
+            ])));
+        }
+        // Layers count up from their bottom, so the window's top edge is y = 1.
+        card_fade.setStartPoint(CGPoint::new(0.5, 1.0));
+        card_fade.setEndPoint(CGPoint::new(0.5, 1.0 - card::FADE / card::WINDOW_H));
+        card_fade.setFrame(CGRect::new(
+            CGPoint::new(0.0, 0.0),
+            CGSize::new(card::INNER, card::WINDOW_H),
+        ));
+        card_window.setFrame(CGRect::new(
+            CGPoint::new(card::SIDE, card::LAST),
+            CGSize::new(card::INNER, card::WINDOW_H),
+        ));
         let card_body = CALayer::new();
         card_clip.addSublayer(&card_body);
         card_body.addSublayer(&card_top);
-        card_body.addSublayer(&card_lines);
+        card_body.addSublayer(&card_window);
         let warn_icons = [
             stroke_layer(&card_top, FLAG, 2.0),
             stroke_layer(&card_top, FLAG, 2.0),
@@ -793,7 +830,9 @@ impl Bubble {
             acts,
             card_clip,
             card_top,
-            card_lines,
+            card_window,
+            card_fade,
+            card_rows: RefCell::new(Vec::new()),
             card_body,
             warn_icons,
             fonts: card::Fonts::new(bundled_font(MONO, 10.5, "JetBrains Mono")),
@@ -801,7 +840,6 @@ impl Bubble {
             card_h: Cell::new(0.0),
             top_h: Cell::new(0.0),
             painted_age: RefCell::new(None),
-            rise: Cell::new(0.0),
             pause_bg,
             mute_bg,
             pause_icon,
@@ -895,7 +933,7 @@ impl Bubble {
         self.toast.setOpacity(0.0);
         self.close.setOpacity(0.0);
         self.refresh(true);
-        self.repaint();
+        self.repaint(false);
         self.pulse();
         let still = reduce_motion();
         self.panel.setAlphaValue(if still { 1.0 } else { 0.0 });
@@ -1085,7 +1123,7 @@ impl Bubble {
             && !force
             && (flipped || silence || *self.painted_age.borrow() != self.age())
         {
-            self.repaint();
+            self.repaint(false);
         }
     }
 
@@ -1486,7 +1524,7 @@ impl Bubble {
         }
         if open {
             // Painted while still folded, so the corner clamps once to the card's real height before it opens.
-            self.repaint();
+            self.repaint(false);
             // That clamp can move the pill out from under the pointer, and the exit it delivers has already ended the hover.
             if !self.hover.get() {
                 return;
@@ -1554,7 +1592,7 @@ impl Bubble {
             let a = CABasicAnimation::animationWithKeyPath(Some(&key));
             unsafe {
                 a.setFromValue(from.as_deref().map(cf_object));
-                a.setToValue(Some(cf_object(&path)));
+                a.setToValue(Some(cf_object(&*path)));
             }
             a.setDuration(secs);
             a.setTimingFunction(Some(&ease_slide()));
@@ -1577,10 +1615,6 @@ impl Bubble {
         self.card_top.setFrame(CGRect::new(
             CGPoint::new(0.0, card_h - top_h),
             CGSize::new(card::CARD_W, top_h),
-        ));
-        self.card_lines.setFrame(CGRect::new(
-            CGPoint::new(0.0, 0.0),
-            CGSize::new(card::CARD_W, card_h - top_h),
         ));
         CATransaction::commit();
         if self.scaling.get() == 0 {
@@ -1725,7 +1759,11 @@ impl Bubble {
     }
 
     fn set_card(&self, card: crate::bubble::Card) {
-        let added = card.added > self.card.borrow().added && card.title == self.card.borrow().title;
+        // A new meeting's card numbers its lines from 1 again, so only the same card's lines move.
+        let same = {
+            let old = self.card.borrow();
+            card.title == old.title && card.added >= old.added
+        };
         if *self.card.borrow() == card {
             return;
         }
@@ -1733,17 +1771,7 @@ impl Bubble {
         if self.phase.get() != Phase::Shown || !self.fold.get().open {
             return;
         }
-        self.repaint();
-        // The mock's new line: the older lines move up and the new one rises in from below.
-        if added && self.fold.get().open && !reduce_motion() {
-            animate(
-                &self.card_lines,
-                "transform.translation.y",
-                -self.rise.get(),
-                0.0,
-                0.26,
-            );
-        }
+        self.repaint(same && !reduce_motion());
     }
 
     /// The recap's age as the card would read it now.
@@ -1755,7 +1783,8 @@ impl Bubble {
     }
 
     /// Draws the card for its contents and the live warnings, and lays the bubble out around its new height.
-    fn repaint(&self) {
+    /// `moving` slides the lines from where they were, as when a line arrives or grows; otherwise they land in place.
+    fn repaint(&self, moving: bool) {
         *self.painted_age.borrow_mut() = self.age();
         let (silent, muted) = self.flags();
         let warns: Vec<card::Warn> = [(silent, card::Warn::Silent), (muted, card::Warn::Muted)]
@@ -1767,14 +1796,9 @@ impl Bubble {
         let scale = self.panel.backingScaleFactor();
         CATransaction::begin();
         CATransaction::setDisableActions(true);
-        unsafe {
-            self.card_top.setContents(Some(&painted.top));
-            self.card_lines
-                .setContents(painted.lines.as_deref().map(|i| &**i as &AnyObject));
-        }
-        for l in [&self.card_top, &self.card_lines] {
-            l.setContentsScale(scale);
-        }
+        unsafe { self.card_top.setContents(Some(&painted.top)) };
+        self.card_top.setContentsScale(scale);
+        self.place_lines(&painted.lines, scale, moving);
         for (icon, w) in self
             .warn_icons
             .iter()
@@ -1790,10 +1814,57 @@ impl Bubble {
             }
         }
         self.top_h.set(painted.top_h);
-        self.rise.set(painted.rise);
-        self.card_h.set(painted.top_h + painted.lines_h);
+        self.card_h.set(painted.top_h + card::WINDOW_H + card::LAST);
         self.layout();
         CATransaction::commit();
+    }
+
+    /// Stacks the line layers up from the window's bottom, newest lowest, reusing each line's layer by its key.
+    fn place_lines(&self, lines: &[(u64, Retained<NSImage>, f64)], scale: f64, moving: bool) {
+        let mut rows = self.card_rows.borrow_mut();
+        let mut placed = Vec::with_capacity(lines.len());
+        let mut bottom = 0.0;
+        for (key, image, h) in lines.iter().rev() {
+            let (layer, was) = match rows.iter().position(|(k, ..)| k == key) {
+                Some(i) => {
+                    let (_, layer, was) = rows.swap_remove(i);
+                    (layer, Some(was))
+                }
+                None => {
+                    let layer = CALayer::new();
+                    self.card_window.addSublayer(&layer);
+                    (layer, None)
+                }
+            };
+            unsafe { layer.setContents(Some(&**image as &AnyObject)) };
+            layer.setContentsScale(scale);
+            layer.setFrame(CGRect::new(
+                CGPoint::new(0.0, bottom),
+                CGSize::new(card::INNER, h.min(card::WINDOW_H)),
+            ));
+            let top = bottom + h;
+            if moving {
+                match was {
+                    Some(was) if (was - top).abs() > 0.5 => shift(&layer, was - top),
+                    Some(_) => {}
+                    // The mock's new line.
+                    None => {
+                        animate(&layer, "opacity", 0.0, 1.0, 0.26);
+                        animate(&layer, "transform.translation.y", -3.0, 0.0, 0.26);
+                    }
+                }
+            }
+            placed.push((*key, layer, top));
+            bottom += h + card::LINE_GAP;
+        }
+        for (_, layer, _) in rows.drain(..) {
+            layer.removeFromSuperlayer();
+        }
+        placed.reverse();
+        *rows = placed;
+        let over = bottom - card::LINE_GAP > card::WINDOW_H + 0.5;
+        self.card_fade.setContentsScale(scale);
+        unsafe { self.card_window.setMask(over.then_some(&**self.card_fade)) };
     }
 
     fn set_status(&self, paused_since_ms: Option<u64>, muted: bool) {
@@ -1808,7 +1879,7 @@ impl Bubble {
         }
         self.refresh(true);
         if self.fold.get().open {
-            self.repaint();
+            self.repaint(false);
         }
         if paused_changed {
             self.pulse();

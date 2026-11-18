@@ -1,4 +1,4 @@
-//! The hover card's contents, drawn with AppKit's text layout into two images: everything above the transcript, and the transcript lines, which slide on their own when one arrives.
+//! The hover card's contents, drawn with AppKit's text layout into images: everything above the transcript, and one per transcript line, which the panel moves on its own.
 //! Sizes and colors are the mock's `.upin`, `.pk-head`, `.warn`, `.pk-lab`, `.recap` and `.ln`.
 
 use block2::RcBlock;
@@ -20,11 +20,16 @@ use crate::bubble::Card;
 use crate::panel::{bundled_font, Rgba};
 
 pub(super) const CARD_W: f64 = 300.0;
-const SIDE: f64 = 13.0;
-const INNER: f64 = CARD_W - 2.0 * SIDE;
+pub(super) const SIDE: f64 = 13.0;
+pub(super) const INNER: f64 = CARD_W - 2.0 * SIDE;
 /// The mock's margin above each block, and below the last one.
 const STEP: f64 = 10.0;
-const LAST: f64 = 2.0;
+pub(super) const LAST: f64 = 2.0;
+const BODY_LINE: f64 = 12.5 * 1.45;
+pub(super) const WINDOW_H: f64 = 8.0 * BODY_LINE;
+/// How far down from the window's top edge the older words fade in, once they run past it.
+pub(super) const FADE: f64 = 18.0;
+pub(super) const LINE_GAP: f64 = 4.0;
 
 /// Which warning a box carries, for the icon layer laid over it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,10 +41,9 @@ pub(super) enum Warn {
 pub(super) struct Painted {
     pub top: Retained<NSImage>,
     pub top_h: f64,
-    pub lines: Option<Retained<NSImage>>,
-    pub lines_h: f64,
-    /// The newest line's height with the gap above it: how far the older lines move up when it arrives.
-    pub rise: f64,
+    /// The transcript, oldest first: each line's key, its image, and its full height.
+    /// A line taller than the window keeps only its bottom [`WINDOW_H`] in the image, which is all the window can show.
+    pub lines: Vec<(u64, Retained<NSImage>, f64)>,
     /// Each warning's icon center, from the top-left of the top image.
     pub icons: Vec<(Warn, CGPoint)>,
 }
@@ -109,12 +113,16 @@ fn options() -> NSStringDrawingOptions {
         | NSStringDrawingOptions::TruncatesLastVisibleLine
 }
 
+fn height(text: &NSAttributedString, width: f64) -> f64 {
+    text.boundingRectWithSize_options_context(CGSize::new(width, 1e6), options(), None)
+        .size
+        .height
+        .ceil()
+}
+
 /// The height `text` takes in `width`, at most `max_lines` lines of `line` points.
 fn measure(text: &NSAttributedString, width: f64, line: f64, max_lines: usize) -> f64 {
-    let r = text.boundingRectWithSize_options_context(CGSize::new(width, 1e4), options(), None);
-    (r.size.height.ceil())
-        .min(line * max_lines as f64)
-        .max(line)
+    height(text, width).min(line * max_lines as f64).max(line)
 }
 
 enum Ink {
@@ -122,8 +130,8 @@ enum Ink {
     Rounded(CGRect, f64, Rgba),
 }
 
-/// Draws `inks`, laid out top-down, into an image `height` tall.
-fn image(inks: Vec<Ink>, height: f64) -> Retained<NSImage> {
+/// Draws `inks`, laid out top-down, into an image `width` by `height`.
+fn image(inks: Vec<Ink>, width: f64, height: f64) -> Retained<NSImage> {
     let draw = RcBlock::new(move |_rect: CGRect| -> Bool {
         for ink in &inks {
             match ink {
@@ -137,12 +145,11 @@ fn image(inks: Vec<Ink>, height: f64) -> Retained<NSImage> {
         }
         Bool::YES
     });
-    NSImage::imageWithSize_flipped_drawingHandler(CGSize::new(CARD_W, height), true, &draw)
+    NSImage::imageWithSize_flipped_drawingHandler(CGSize::new(width, height), true, &draw)
 }
 
 /// Lays out the card for its current contents and the live silence and mute warnings.
 pub(super) fn paint(card: &Card, warns: &[Warn], p: &Palette, f: &Fonts) -> Painted {
-    let body_line = 12.5 * 1.45;
     let mut inks = Vec::new();
     let mut icons = Vec::new();
     let mut y = STEP;
@@ -201,56 +208,62 @@ pub(super) fn paint(card: &Card, warns: &[Warn], p: &Palette, f: &Fonts) -> Pain
         )
     };
 
-    if card.lines.is_empty() {
-        return Painted {
-            top: image(inks, y - STEP + LAST),
-            top_h: y - STEP + LAST,
-            lines: None,
-            lines_h: 0.0,
-            rise: 0.0,
-            icons,
-        };
-    }
     inks.push(Ink::Text(
         label("Transcript"),
         CGRect::new(CGPoint::new(SIDE, y), CGSize::new(INNER, label_line)),
     ));
     y += label_line + 4.0;
-    let top = image(inks, y);
+    let top = image(inks, CARD_W, y);
 
-    // `.ln`: "Me" in the mic's color or "Them" muted, then the words, at most two lines each.
-    let mut lines = Vec::new();
-    let mut ly = 0.0;
-    let mut rise = 0.0;
-    for (i, line) in card.lines.iter().enumerate() {
-        let (who, c) = if line.me {
-            ("Me", p.mic)
-        } else {
-            ("Them", p.muted)
-        };
-        let t = run(who, &f.bold, c, 0.0, body_line);
-        t.appendAttributedString(&run(
-            &format!("\u{2006}\u{2006}{}", line.text),
+    // `.ln`: "Me" in the mic's color or "Them" muted, then the words, faded while the line is unfinished as the page's dock draws partials.
+    let line_image = |t: Retained<NSMutableAttributedString>, h: f64| {
+        let shown = h.min(WINDOW_H);
+        let at = CGRect::new(CGPoint::new(0.0, shown - h), CGSize::new(INNER, h));
+        image(vec![Ink::Text(t, at)], INNER, shown)
+    };
+    let lines = if card.lines.is_empty() {
+        let t = run(
+            "Waiting for audio\u{2026}",
             &f.body,
-            p.ink,
+            p.muted,
             0.0,
-            body_line,
-        ));
-        let h = measure(&t, INNER, body_line, 2);
-        lines.push(Ink::Text(
-            t,
-            CGRect::new(CGPoint::new(SIDE, ly), CGSize::new(INNER, h)),
-        ));
-        ly += h + if i + 1 < card.lines.len() { 4.0 } else { 0.0 };
-        rise = h + 4.0;
-    }
-    let lines_h = ly + LAST;
+            BODY_LINE,
+        );
+        vec![(0, line_image(t, BODY_LINE), BODY_LINE)]
+    } else {
+        // Key 0 is the waiting line's.
+        let first = card.first_key().max(1);
+        card.lines
+            .iter()
+            .zip(first..)
+            .map(|(line, key)| {
+                let (who, c) = if line.me {
+                    ("Me", p.mic)
+                } else {
+                    ("Them", p.muted)
+                };
+                let words = if line.done {
+                    p.ink
+                } else {
+                    (p.ink.0, p.ink.1, p.ink.2, p.ink.3 * 0.7)
+                };
+                let t = run(who, &f.bold, c, 0.0, BODY_LINE);
+                t.appendAttributedString(&run(
+                    &format!("\u{2006}\u{2006}{}", line.text),
+                    &f.body,
+                    words,
+                    0.0,
+                    BODY_LINE,
+                ));
+                let h = height(&t, INNER).max(BODY_LINE);
+                (key, line_image(t, h), h)
+            })
+            .collect()
+    };
     Painted {
         top,
         top_h: y,
-        lines: Some(image(lines, lines_h)),
-        lines_h,
-        rise,
+        lines,
         icons,
     }
 }
